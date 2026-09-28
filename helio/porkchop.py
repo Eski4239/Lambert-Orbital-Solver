@@ -110,3 +110,65 @@ def solve_transfer(elements, dep_jd, tof_days, prograde=True):
     r2, v_t = target_state(elements, dep_jd + tof_days)
     v1, v2 = lamsolbert(r1, r2, tof_days * DAY, mu=MU_SUN, prograde=prograde)
     return Transfer(dep_jd, tof_days, r1, v1, r2, v2, v_e, v_t)
+
+
+def refine_best(elements, pc, metric="dv_total"):
+    """
+    Continuous minimum of `metric` near the grid minimum: Nelder-Mead over
+    (departure date, time of flight), starting from the best grid cell with
+    a simplex one grid step wide, kept inside the grid's bounds. The grid
+    alone is only as fine as its spacing (~10 days x ~7 days by default).
+    Returns (dep_jd, tof_days, value).
+    """
+    from scipy.optimize import minimize
+
+    best = pc.best(metric)
+    if best is None:
+        return None
+    d0, t0, v0 = best
+    dd = pc.dep_jd[1] - pc.dep_jd[0] if len(pc.dep_jd) > 1 else 1.0
+    dt = pc.tof_days[1] - pc.tof_days[0] if len(pc.tof_days) > 1 else 1.0
+    lo_d, hi_d, lo_t, hi_t = pc.dep_jd[0], pc.dep_jd[-1], pc.tof_days[0], pc.tof_days[-1]
+
+    def f(x):
+        d, t = d0 + x[0], x[1]  # departure as days from the grid best (see closest_approach)
+        if not (lo_d <= d <= hi_d and lo_t <= t <= hi_t):
+            return 1e9
+        try:
+            return getattr(solve_transfer(elements, d, t), metric)
+        except (ValueError, RuntimeError):
+            return 1e9
+
+    simplex = [[0.0, t0], [dd, t0], [0.0, t0 + dt]]
+    res = minimize(f, [0.0, t0], method="Nelder-Mead",
+                   options={"initial_simplex": simplex, "xatol": 0.05, "fatol": 1e-4, "maxiter": 150})
+    if res.fun < v0:
+        return float(d0 + res.x[0]), float(res.x[1]), float(res.fun)
+    return best
+
+
+def closest_approach(elements, jd_start, jd_end, step_days=1.0):
+    """
+    Minimum distance between the target and Earth (Earth-Moon barycentre)
+    over [jd_start, jd_end]: sampled every step_days, then refined around
+    the smallest sample with a bounded scalar minimisation.
+    Returns (jd, distance_km).
+    """
+    from scipy.optimize import minimize_scalar
+
+    def dist(jd):
+        return np.linalg.norm(target_state(elements, jd)[0] - planet_state("Earth", jd)[0], axis=-1)
+
+    jds = np.arange(jd_start, jd_end + step_days, step_days)
+    d = dist(jds)
+    k = int(np.argmin(d))
+    # Optimise over days from the best sample, not raw JD: the bounded
+    # method's tolerance includes ~sqrt(eps)*|x|, i.e. ~0.04 days at
+    # JD ~ 2.46e6, long enough for a close flyby to move by ~20,000 km.
+    ref = jds[k]
+    lo, hi = jds[max(k - 1, 0)] - ref, jds[min(k + 1, len(jds) - 1)] - ref
+    res = minimize_scalar(lambda x: float(dist(ref + x)), bounds=(lo, hi), method="bounded",
+                          options={"xatol": 1e-6})
+    if res.fun < d[k]:
+        return float(ref + res.x), float(res.fun)
+    return float(ref), float(d[k])

@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.constants import AU, DAY, MU_SUN                        # noqa: E402
 from core.kepler import coe_to_rv, perifocal_basis, solve_kepler, position_at  # noqa: E402
 from helio.neo_catalog import elements_of, filter_catalog, load_catalog  # noqa: E402
-from helio.porkchop import compute_porkchop, solve_transfer       # noqa: E402
+from helio.planets import in_valid_range, planet_state            # noqa: E402
+from helio.porkchop import (closest_approach, compute_porkchop, refine_best,  # noqa: E402
+                            solve_transfer, target_state)
 
 
 @pytest.fixture(scope="module")
@@ -110,3 +112,37 @@ def test_porkchop_matches_single_transfer(catalog):
     tr = solve_transfer(elements_of(row), pc.dep_jd[2], pc.tof_days[3])
     assert pc.c3[3, 2] == pytest.approx(tr.c3, rel=1e-9)
     assert pc.vinf_arr[3, 2] == pytest.approx(tr.vinf_arr, rel=1e-9)
+
+
+def test_refine_best_improves_on_grid_and_nears_hohmann():
+    target = (1.524 * AU, 0.0, 0.0, 0.0, 0.0, 0.0, 2461000.5)
+    pc = compute_porkchop(target, 2461000.5, 800, 150, 350, n_dep=30, n_tof=20)
+    grid = pc.best()
+    dep, tof, dv = refine_best(target, pc)
+    assert dv <= grid[2]
+    assert dv == pytest.approx(5.59, abs=0.1)   # Hohmann: 2.94 + 2.65 km/s
+    assert tof == pytest.approx(259, abs=15)
+
+
+def test_closest_approach_apophis_2029(catalog):
+    """
+    Two-body model of Apophis' 2029 Earth flyby. Actual: ~38,000 km from
+    Earth's centre on 2029-04-13 21:46 UTC. Ignoring Earth's gravity on the
+    asteroid (and measuring to the Earth-Moon barycentre) our model gives
+    ~30,600 km a few hours later; guard that result against regressions and
+    check the refinement against a brute-force scan.
+    """
+    row = catalog[catalog["pdes"] == "99942"].iloc[0]
+    el = elements_of(row)
+    jd, dist = closest_approach(el, 2461311.5, 2461311.5 + 4 * 365)
+    assert jd == pytest.approx(2462240.4, abs=0.5)     # 2029-04-13/14
+    assert 20000 < dist < 45000
+    fine = np.arange(jd - 0.05, jd + 0.05, 1e-4)
+    d = np.linalg.norm(target_state(el, fine)[0] - planet_state("Earth", fine)[0], axis=-1)
+    assert dist <= d.min() + 1.0
+
+
+def test_ephemeris_validity_range():
+    assert in_valid_range([2461311.5, 2470000.5])
+    assert not in_valid_range(2470172.5)   # 2051-01-01
+    assert not in_valid_range(2378495.5)   # 1799-12-31

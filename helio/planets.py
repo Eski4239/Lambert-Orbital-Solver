@@ -22,6 +22,16 @@ import numpy as np
 from core.constants import AU, MU_SUN, JD_J2000
 from core.kepler import coe_to_rv, true_from_mean
 
+# Standish Table 1 is fitted to 1800-01-01 .. 2050-12-31.
+VALID_FROM_JD = 2378496.5
+VALID_TO_JD = 2470171.5
+
+
+def in_valid_range(jd):
+    """True if every date in jd lies inside the ephemeris' fitted interval."""
+    jd = np.asarray(jd, dtype=float)
+    return bool(np.all((jd >= VALID_FROM_JD) & (jd <= VALID_TO_JD)))
+
 
 @dataclass(frozen=True)
 class PlanetElements:

@@ -38,10 +38,51 @@
 
   window.orbitLabSolar = { keplerPosition: keplerPosition, positions: positions, jdToDate: jdToDate };
 
+  // Click-to-select for catalog asteroids. Plotly's 3D 'plotly_click' event
+  // proved unreliable, but hover is: remember the hovered asteroid and, on a
+  // mouse press/release that did not drag the camera, select it.
+  function bindClickSelect(gd) {
+    if (!gd || gd.__orbitLabBound) { return; }
+    gd.__orbitLabBound = true;
+    let hovered = null, down = null;
+    gd.on("plotly_hover", function (e) {
+      const cd = e.points && e.points[0] && e.points[0].customdata;
+      hovered = Array.isArray(cd) ? cd[0] : null;
+    });
+    gd.on("plotly_unhover", function () { hovered = null; });
+    gd.addEventListener("mousedown", function (e) { down = [e.clientX, e.clientY]; }, true);
+    gd.addEventListener("mouseup", function (e) {
+      const still = down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 4;
+      down = null;
+      if (still && hovered && window.dash_clientside.set_props) {
+        window.dash_clientside.set_props("neo-selected", { data: hovered });
+      }
+    }, true);
+  }
+
   window.dash_clientside = Object.assign({}, window.dash_clientside, {
     solar: {
       tick: function (n, day, max) {
         return day >= max ? 0 : Math.min(day + 4, max);
+      },
+
+      saveImage: function (n, view) {
+        // The space backdrop is CSS, not part of the figure: paint the plot
+        // background dark for the export, then restore transparency.
+        const id = view === "mission" ? "#porkchop-graph" : "#solar-graph";
+        const gd = document.querySelector(id + " .js-plotly-plot");
+        if (!gd) { return "Save image"; }
+        const dark = { paper_bgcolor: "#04070f" };
+        if (view !== "mission") { dark["scene.bgcolor"] = "#04070f"; }
+        const restore = { paper_bgcolor: "rgba(0,0,0,0)" };
+        if (view !== "mission") { restore["scene.bgcolor"] = "rgba(0,0,0,0)"; }
+        Plotly.relayout(gd, dark)
+          .then(function () {
+            return Plotly.downloadImage(gd, { format: "png", scale: 2, width: gd.clientWidth,
+              height: gd.clientHeight, filename: view === "mission" ? "porkchop" : "solar_system" });
+          })
+          .then(function () { return Plotly.relayout(gd, restore); });
+        return "Save image";
       },
 
       togglePlay: function (n, disabled) {
@@ -52,6 +93,7 @@
         if (!scene) { return ""; }
         const jd = scene.t0 + (day || 0);
         const gd = document.querySelector("#solar-graph .js-plotly-plot");
+        if (gd && gd.on) { bindClickSelect(gd); }
         if (gd && gd.data) {
           const idx = function (uid) { return gd.data.findIndex(function (t) { return t.uid === uid; }); };
           const update = { x: [], y: [], z: [] }, traces = [];

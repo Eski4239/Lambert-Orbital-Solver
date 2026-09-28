@@ -49,9 +49,12 @@ def orbit_pack(a_km, e, i, raan, argp, M0_deg, epoch_jd):
 
 
 def catalog_pack(df):
-    return orbit_pack(df["a"].to_numpy() * AU, df["e"].to_numpy(), df["i"].to_numpy(),
+    pack = orbit_pack(df["a"].to_numpy() * AU, df["e"].to_numpy(), df["i"].to_numpy(),
                       df["om"].to_numpy(), df["w"].to_numpy(), df["ma"].to_numpy(),
                       df["epoch"].to_numpy())
+    pack["pdes"] = df["pdes"].tolist()      # lets a click in 3D select the object
+    pack["label"] = df["display"].tolist()
+    return pack
 
 
 def planets_pack(jd):
@@ -138,10 +141,13 @@ def solar_figure(jd, planets=None, target=None, cloud=None, transfer=None):
                                    showlegend=False, line=dict(color=PLANETS[name].color, width=2),
                                    opacity=0.55))
 
+    labels = (cloud or {}).get("label", [])
     fig.add_trace(go.Scatter3d(
         x=cloud_xyz[0], y=cloud_xyz[1], z=cloud_xyz[2], mode="markers", uid="cloud",
-        name="Catalog asteroids", hoverinfo="skip", visible=cloud_count > 0,
-        marker=dict(size=2.2, color="rgba(232, 196, 140, 0.55)", line=dict(width=0))))
+        name="Catalog asteroids", visible=cloud_count > 0,
+        customdata=list(zip((cloud or {}).get("pdes", []), labels)),
+        hovertemplate="%{customdata[1]}<br><i>click to select</i><extra></extra>",
+        marker=dict(size=3, color="rgba(232, 196, 140, 0.6)", line=dict(width=0))))
 
     if target is not None:
         pts = ellipse_au(target["a"], target["e"], target["i"], target["om"], target["w"])
@@ -207,11 +213,22 @@ METRICS = {
 }
 
 
+def color_limits(z):
+    """
+    Colour range of a porkchop grid: from the minimum up to the 60th
+    percentile or 3x the minimum (+1), whichever is lower. Cells above it are
+    treated as outside the viable region (not coloured, flagged if picked).
+    """
+    finite = z[np.isfinite(z)]
+    if not finite.size:
+        return 0.0, 1.0
+    zmin = float(finite.min())
+    return zmin, float(min(np.percentile(finite, 60), zmin * 3 + 1))
+
+
 def porkchop_figure(dep_dates, tof_days, z, metric, best=None, picked=None):
     """dep_dates: ISO date strings; z: (n_tof, n_dep); best/picked: (date, tof)."""
-    finite = z[np.isfinite(z)]
-    zmin = float(finite.min()) if finite.size else 0.0
-    zmax = float(min(np.percentile(finite, 60), zmin * 3 + 1)) if finite.size else 1.0
+    zmin, zmax = color_limits(z)
     # Cells above the colour scale are left out, so only the useful
     # launch windows are coloured and the rest shows the space backdrop.
     z = np.where(z <= zmax, z, np.nan)

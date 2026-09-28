@@ -14,19 +14,21 @@ import numpy as np
 from dash import (ClientsideFunction, Input, Output, State, callback, clientside_callback,
                   ctx, dash_table, dcc, html, no_update)
 
-from app.neo_figures import (MAX_CLOUD, METRICS, catalog_pack, orbit_pack, planets_pack,
-                             porkchop_figure, solar_figure, starfield_svg)
+from app.neo_figures import (MAX_CLOUD, METRICS, catalog_pack, color_limits, orbit_pack,
+                             planets_pack, porkchop_figure, solar_figure, starfield_svg)
 from core.constants import AU
 from core.time_utils import julian_date
-from helio.neo_catalog import (CLASS_NAMES, elements_of, estimated_diameter_km, fetch_catalog,
-                               filter_catalog, load_catalog, snapshot_info)
-from helio.porkchop import compute_porkchop, solve_transfer
+from helio.neo_catalog import (CLASS_NAMES, LUNAR_DISTANCE_AU, catalog_path, elements_of,
+                               estimated_diameter_km, fetch_catalog, filter_catalog,
+                               load_catalog, snapshot_info)
+from helio.planets import VALID_FROM_JD, VALID_TO_JD, in_valid_range
+from helio.porkchop import closest_approach, compute_porkchop, refine_best, solve_transfer
 
 WINDOW_DAYS = 4 * 365          # date slider span, from today
 DEFAULT_OBJECT = "99942"       # Apophis: Earth flyby on 2029-04-13, inside the window
 PAGE_SIZE = 10
 
-_state = {"df": load_catalog(), "info": snapshot_info()}
+_state = {"df": load_catalog(catalog_path()), "info": snapshot_info(catalog_path())}
 
 
 def _today_jd():
@@ -34,8 +36,8 @@ def _today_jd():
     return julian_date(datetime(now.year, now.month, now.day, tzinfo=timezone.utc))
 
 
-def jd_to_date(jd):
-    return (datetime(2000, 1, 1, 12, tzinfo=timezone.utc) + timedelta(days=jd - 2451545.0)).strftime("%Y-%m-%d")
+def jd_to_date(jd, fmt="%Y-%m-%d"):
+    return (datetime(2000, 1, 1, 12, tzinfo=timezone.utc) + timedelta(days=jd - 2451545.0)).strftime(fmt)
 
 
 def date_to_jd(text):
@@ -52,6 +54,33 @@ def _short_name(row):
     return row["name"] if isinstance(row["name"], str) and row["name"] else row["pdes"]
 
 
+def format_distance(km):
+    """Close approaches in km, farther ones in AU, both with lunar distances."""
+    ld = km / AU / LUNAR_DISTANCE_AU
+    if km < 0.01 * AU:
+        return f"{km:,.0f} km · {ld:.2g} LD"
+    return f"{km / AU:.3f} AU · {ld:,.0f} LD"
+
+
+def transfer_csv(tr, row):
+    """Chosen transfer as 'quantity,value,unit' rows, for the report."""
+    lines = [
+        ("target", row["display"], ""),
+        ("departure (UTC date)", jd_to_date(tr["dep_jd"]), ""),
+        ("departure JD", f"{tr['dep_jd']:.4f}", "d"),
+        ("arrival (UTC date)", jd_to_date(tr["dep_jd"] + tr["tof"]), ""),
+        ("time of flight", f"{tr['tof']:.2f}", "days"),
+        ("launch energy C3", f"{tr['c3']:.4f}", "km^2/s^2"),
+        ("departure v_inf", f"{tr['vinf_dep']:.4f}", "km/s"),
+        ("arrival v_inf", f"{tr['vinf_arr']:.4f}", "km/s"),
+        ("total delta-v (v_inf dep + arr)", f"{tr['dv_total']:.4f}", "km/s"),
+        ("inside viable region", "yes" if tr.get("viable", True) else "no", ""),
+        ("method", "Lambert (core.lamsolbert, mu = Sun); Earth = Earth-Moon barycentre (JPL approx. "
+                   "elements); target = two-body propagation of JPL SBDB elements", ""),
+    ]
+    return "quantity,value,unit\n" + "\n".join(f'"{q}","{v}","{u}"' for q, v, u in lines) + "\n"
+
+
 # ----------------------------------------------------------------------
 # Layout
 # ----------------------------------------------------------------------
@@ -61,6 +90,21 @@ def _readout(label, id_, unit=""):
         html.Div(className="readout-value", children=[html.Span("—", id=id_),
                                                         html.Span(unit, className="readout-unit")]),
     ])
+
+
+HOW_IT_WORKS = [
+    html.Li(["Asteroid orbits are JPL Small-Body Database elements (heliocentric, ecliptic J2000). "
+             "Positions on any date come from two-body Kepler propagation (Sun only), so accuracy "
+             "falls off with distance from each object's ", html.I("elements epoch"), "."]),
+    html.Li("Planets use JPL's approximate Keplerian elements (Standish), valid 1800–2050; "
+            "'Earth' is the Earth–Moon barycentre."),
+    html.Li(["Each porkchop cell is one Lambert problem solved with the project's ",
+             html.Code("lamsolbert"), " using the Sun's gravitational parameter: Earth at departure "
+             "→ asteroid at arrival. C3 is the squared departure excess speed; total Δv adds "
+             "the arrival excess speed (a rendezvous, excluding Earth escape and capture burns)."]),
+    html.Li("The best transfer starts at the grid minimum and is refined with a Nelder–Mead "
+            "search (SciPy). Closest approach to Earth is sampled daily, then refined."),
+]
 
 
 def layout():
@@ -98,6 +142,7 @@ def layout():
             html.Span(id="neo-count", className="hint"),
             html.Span(className="legend-pha", children=[html.Span(className="dot-pha"), "potentially hazardous"]),
         ]),
+        html.P("Tip: you can also click an asteroid in the solar-system view.", className="hint"),
         html.Div(className="row between table-foot", children=[
             html.Span(id="neo-snapshot", className="hint", children=_state["info"]),
             html.Button("Refresh from JPL", id="neo-refresh", className="btn btn-small"),
@@ -118,6 +163,10 @@ def layout():
             _readout("Period", "obj-per", "yr"),
         ]),
         html.Div(id="obj-chips", className="subline"),
+        html.Div(className="approach", children=[
+            html.Span(id="obj-approach"),
+            html.Button("Go to this date →", id="go-approach", className="btn btn-small btn-outline"),
+        ]),
     ])
 
     tof_marks = {d: f"{d}" for d in (50, 200, 400, 600, 800)}
@@ -126,11 +175,15 @@ def layout():
             dcc.RadioItems(id="neo-view", className="seg seg-dark", inline=True, value="solar",
                            options=[{"label": "Solar system", "value": "solar"},
                                     {"label": "Mission design", "value": "mission"}]),
-            dcc.Checklist(id="neo-show-cloud", className="layers layers-dark", inline=True,
-                          options=[{"label": "Show catalog asteroids", "value": "on"}], value=["on"]),
+            html.Div(className="row", style={"gap": "14px"}, children=[
+                dcc.Checklist(id="neo-show-cloud", className="layers layers-dark", inline=True,
+                              options=[{"label": "Show catalog asteroids", "value": "on"}], value=["on"]),
+                html.Button("Save image", id="neo-save", className="btn btn-small btn-ghost-dark"),
+            ]),
         ]),
         html.Div(id="solar-pane", children=[
-            dcc.Graph(id="solar-graph", className="graph", config={"displaylogo": False}),
+            dcc.Graph(id="solar-graph", className="graph",
+                      config={"displaylogo": False, "modeBarButtonsToRemove": ["toImage", "sendDataToCloud"]}),
             html.Div(className="timebar timebar-dark", children=[
                 html.Button("▶", id="neo-play", className="btn btn-icon btn-primary", title="Play / pause"),
                 html.Div(className="slider-wrap", children=[
@@ -138,7 +191,11 @@ def layout():
                                allow_direct_input=False,
                                marks={d: jd_to_date(t0 + d)[:4] for d in range(0, WINDOW_DAYS + 1, 365)}),
                 ]),
-                html.Div(id="neo-date", className="time-readout"),
+                html.Div(className="date-box", children=[
+                    html.Div(id="neo-date", className="time-readout"),
+                    dcc.Input(id="neo-jump", type="text", debounce=True, className="inp inp-dark inp-jump",
+                              placeholder="Go to date (YYYY-MM-DD)"),
+                ]),
             ]),
             dcc.Interval(id="neo-ticker", interval=60, disabled=True),
         ]),
@@ -161,15 +218,23 @@ def layout():
                 dcc.RadioItems(id="pc-metric", className="seg seg-dark", inline=True, value="dv_total",
                                options=[{"label": v[1], "value": k} for k, v in METRICS.items()]),
             ]),
+            html.Div(id="pc-message", className="pc-message"),
             dcc.Loading(type="dot", color="#4cc9f0", children=dcc.Graph(
-                id="porkchop-graph", className="graph graph-short", config={"displaylogo": False})),
+                id="porkchop-graph", className="graph graph-short",
+                config={"displaylogo": False, "modeBarButtonsToRemove": ["toImage", "sendDataToCloud"]})),
             html.Div(className="transfer-bar", children=[
                 html.Div(id="transfer-chips", className="subline subline-dark"),
-                html.Button("Show in solar system →", id="show-transfer", className="btn btn-primary"),
+                html.Div(className="row", children=[
+                    html.Button("Download (.csv)", id="transfer-download", className="btn btn-small btn-ghost-dark"),
+                    html.Button("Show in solar system →", id="show-transfer", className="btn btn-primary"),
+                ]),
             ]),
-            html.P("Click anywhere on the plot to pick a transfer. Each cell is one Lambert solution "
-                   "(Earth at departure → asteroid at arrival) using the Sun's gravity.",
-                   className="hint hint-dark"),
+            html.P("Click anywhere on the plot to pick a transfer; uncoloured areas are outside the "
+                   "viable range.", className="hint hint-dark"),
+        ]),
+        html.Details(className="info info-dark", children=[
+            html.Summary("How it works"),
+            html.Ul(HOW_IT_WORKS),
         ]),
     ])
 
@@ -179,8 +244,10 @@ def layout():
         dcc.Store(id="neo-selected", data=DEFAULT_OBJECT),
         dcc.Store(id="neo-cloud"),
         dcc.Store(id="neo-transfer"),
+        dcc.Store(id="neo-approach-jd"),
         dcc.Store(id="solar-scene"),
         dcc.Store(id="neo-t0", data=t0),
+        dcc.Download(id="neo-download"),
     ])
 
 
@@ -223,7 +290,7 @@ def update_table(text, classes, pha, page, sort_by, selected, _snapshot):
 
 @callback(Output("neo-selected", "data"), Input("neo-table", "active_cell"),
           State("neo-table", "data"), prevent_initial_call=True)
-def select_object(cell, rows):
+def select_from_table(cell, rows):
     if not cell or not rows or cell["row"] >= len(rows):
         return no_update
     return rows[cell["row"]]["pdes"]
@@ -234,7 +301,7 @@ def select_object(cell, rows):
 def refresh_catalog(_n):
     try:
         _state["df"] = fetch_catalog()
-        _state["info"] = snapshot_info()
+        _state["info"] = snapshot_info(catalog_path())
         return _state["info"]
     except Exception as exc:  # noqa: BLE001 - network errors are shown, not raised
         return f"Refresh failed ({exc.__class__.__name__}); using {_state['info']}"
@@ -251,13 +318,13 @@ def _chip(label, value, cls="chip"):
     Output("obj-name", "children"), Output("obj-badges", "children"),
     Output("obj-a", "children"), Output("obj-e", "children"), Output("obj-i", "children"),
     Output("obj-q", "children"), Output("obj-Q", "children"), Output("obj-per", "children"),
-    Output("obj-chips", "children"),
-    Input("neo-selected", "data"), Input("neo-snapshot", "children"),
+    Output("obj-chips", "children"), Output("obj-approach", "children"), Output("neo-approach-jd", "data"),
+    Input("neo-selected", "data"), Input("neo-snapshot", "children"), State("neo-t0", "data"),
 )
-def show_object(pdes, _snapshot):
+def show_object(pdes, _snapshot, t0):
     row = _row(pdes)
     if row is None:
-        return ("No object selected",) + (no_update,) * 8
+        return ("No object selected",) + (no_update,) * 10
     badges = [html.Span(CLASS_NAMES.get(row["class"], row["class"]), className="badge")]
     if row["pha"]:
         badges.append(html.Span("Potentially hazardous", className="badge badge-warn"))
@@ -273,8 +340,11 @@ def show_object(pdes, _snapshot):
         _chip("Elements epoch", jd_to_date(row["epoch"])),
     ]
     period = row["per_y"] if np.isfinite(row["per_y"]) else row["a"] ** 1.5
+    jd, km = closest_approach(elements_of(row), t0, t0 + WINDOW_DAYS)
+    approach = _chip(f"Closest to Earth, next {WINDOW_DAYS // 365} years",
+                     f"{format_distance(km)} on {jd_to_date(jd, '%Y-%m-%d %H:%M')} UTC", "chip chip-accent")
     return (row["display"], badges, f"{row['a']:.4f}", f"{row['e']:.4f}", f"{row['i']:.2f}°",
-            f"{row['q']:.4f}", f"{row['ad']:.4f}", f"{period:.2f}", chips)
+            f"{row['q']:.4f}", f"{row['ad']:.4f}", f"{period:.2f}", chips, approach, jd)
 
 
 # ----------------------------------------------------------------------
@@ -313,22 +383,54 @@ def render_solar(pdes, cloud, show_cloud, transfer, day, t0):
     return fig, scene
 
 
+@callback(Output("neo-day", "value", allow_duplicate=True), Output("neo-jump", "className"),
+          Input("neo-jump", "value"), State("neo-t0", "data"), prevent_initial_call=True)
+def jump_to_date(text, t0):
+    if not (text or "").strip():
+        return no_update, "inp inp-dark inp-jump"
+    try:
+        day = round(date_to_jd(text) - t0)
+    except ValueError:
+        return no_update, "inp inp-dark inp-jump invalid"
+    if not 0 <= day <= WINDOW_DAYS:
+        return no_update, "inp inp-dark inp-jump invalid"
+    return day, "inp inp-dark inp-jump"
+
+
+@callback(Output("neo-view", "value", allow_duplicate=True), Output("neo-day", "value", allow_duplicate=True),
+          Input("go-approach", "n_clicks"), State("neo-approach-jd", "data"), State("neo-t0", "data"),
+          prevent_initial_call=True)
+def go_to_approach(_n, jd, t0):
+    if jd is None:
+        return no_update, no_update
+    return "solar", int(np.clip(round(jd - t0), 0, WINDOW_DAYS))
+
+
+# ----------------------------------------------------------------------
+# Mission design
+# ----------------------------------------------------------------------
 @lru_cache(maxsize=32)
 def _porkchop(pdes, start_jd, span, tof_min, tof_max):
-    row = _row(pdes)
-    return compute_porkchop(elements_of(row), start_jd, span, tof_min, tof_max)
+    return compute_porkchop(elements_of(_row(pdes)), start_jd, span, tof_min, tof_max)
 
 
-def _transfer_payload(pdes, dep_jd, tof):
-    row = _row(pdes)
-    tr = solve_transfer(elements_of(row), dep_jd, tof)
+@lru_cache(maxsize=64)
+def _best(pdes, start_jd, span, tof_min, tof_max, metric):
+    pc = _porkchop(pdes, start_jd, span, tof_min, tof_max)
+    return refine_best(elements_of(_row(pdes)), pc, metric)
+
+
+def _transfer_payload(pdes, dep_jd, tof, metric, limit):
+    tr = solve_transfer(elements_of(_row(pdes)), dep_jd, tof)
+    value = getattr(tr, metric)
     return {"pdes": pdes, "dep_jd": dep_jd, "tof": tof, "path": (tr.path(160) / AU).round(6).tolist(),
-            "c3": tr.c3, "vinf_dep": tr.vinf_dep, "vinf_arr": tr.vinf_arr, "dv_total": tr.dv_total}
+            "c3": tr.c3, "vinf_dep": tr.vinf_dep, "vinf_arr": tr.vinf_arr, "dv_total": tr.dv_total,
+            "metric": metric, "limit": limit, "viable": bool(value <= limit)}
 
 
 @callback(
     Output("porkchop-graph", "figure"), Output("neo-transfer", "data"),
-    Output("pc-start", "className"), Output("pc-span", "className"),
+    Output("pc-start", "className"), Output("pc-span", "className"), Output("pc-message", "children"),
     Input("neo-selected", "data"), Input("pc-start", "value"), Input("pc-span", "value"),
     Input("pc-tof", "value"), Input("pc-metric", "value"), Input("porkchop-graph", "clickData"),
     Input("neo-view", "value"), State("neo-transfer", "data"),
@@ -337,53 +439,61 @@ def render_porkchop(pdes, start, span, tof, metric, click, view, transfer):
     if view != "mission" or _row(pdes) is None:
         # Only compute when visible, but drop a transfer that belongs to another object.
         if transfer and transfer.get("pdes") != pdes:
-            return no_update, None, no_update, no_update
-        return no_update, no_update, no_update, no_update
+            return no_update, None, no_update, no_update, no_update
+        return (no_update,) * 5
     ok, bad = "inp inp-dark", "inp inp-dark invalid"
     try:
         start_jd = date_to_jd(start)
-        cls_start = ok
     except (ValueError, AttributeError):
-        return no_update, no_update, bad, no_update
+        return no_update, no_update, bad, ok, "Departure date must be YYYY-MM-DD."
     try:
         span_d = float(span)
         if not 10 <= span_d <= 3650:
             raise ValueError
     except (TypeError, ValueError):
-        return no_update, no_update, cls_start, bad
+        return no_update, no_update, ok, bad, "Window must be between 10 and 3,650 days."
+    if not in_valid_range([start_jd, start_jd + span_d + tof[1]]):
+        return (no_update, no_update, bad, bad,
+                f"The planet ephemeris is only valid from {jd_to_date(VALID_FROM_JD)} to "
+                f"{jd_to_date(VALID_TO_JD)}: choose a window whose latest arrival "
+                f"({jd_to_date(start_jd + span_d + tof[1])}) falls inside it.")
 
-    pc = _porkchop(pdes, round(start_jd, 1), span_d, float(tof[0]), float(tof[1]))
+    key = (pdes, round(start_jd, 1), span_d, float(tof[0]), float(tof[1]))
+    pc = _porkchop(*key)
     z = getattr(pc, metric)
-    best = pc.best(metric)
+    _, limit = color_limits(z)
+    best = _best(*key, metric)
     dates = [jd_to_date(j) for j in pc.dep_jd]
 
     if ctx.triggered_id == "porkchop-graph" and click:
         pt = click["points"][0]
-        dep_jd = date_to_jd(str(pt["x"])[:10])
-        transfer = _transfer_payload(pdes, dep_jd, float(pt["y"]))
+        transfer = _transfer_payload(pdes, date_to_jd(str(pt["x"])[:10]), float(pt["y"]), metric, limit)
     elif best is not None and (not transfer or transfer.get("pdes") != pdes
                                or ctx.triggered_id != "neo-view"):
-        transfer = _transfer_payload(pdes, best[0], best[1])
+        transfer = _transfer_payload(pdes, best[0], best[1], metric, limit)
 
     picked = (jd_to_date(transfer["dep_jd"]), transfer["tof"]) if transfer else None
     fig = porkchop_figure(dates, pc.tof_days, z, metric,
                           best=(jd_to_date(best[0]), best[1]) if best else None, picked=picked)
-    return fig, transfer, ok, ok
+    return fig, transfer, ok, ok, ""
 
 
 @callback(Output("transfer-chips", "children"), Input("neo-transfer", "data"))
 def show_transfer(tr):
     if not tr:
         return []
-    arr = jd_to_date(tr["dep_jd"] + tr["tof"])
-    return [
+    chips = [
         _chip("Depart", jd_to_date(tr["dep_jd"]), "chip chip-dark"),
-        _chip("Arrive", arr, "chip chip-dark"),
+        _chip("Arrive", jd_to_date(tr["dep_jd"] + tr["tof"]), "chip chip-dark"),
         _chip("Flight", f"{tr['tof']:.0f} days", "chip chip-dark"),
         _chip("C3", f"{tr['c3']:.2f} km²/s²", "chip chip-dark"),
         _chip("Arrival v∞", f"{tr['vinf_arr']:.2f} km/s", "chip chip-dark"),
         _chip("Total Δv", f"{tr['dv_total']:.2f} km/s", "chip chip-dark chip-strong"),
     ]
+    if not tr.get("viable", True):
+        chips.insert(0, html.Span("Outside the viable region: costly transfer",
+                                  className="chip chip-dark chip-warn"))
+    return chips
 
 
 @callback(Output("neo-view", "value"), Output("neo-day", "value"),
@@ -393,6 +503,16 @@ def show_transfer_in_3d(_n, tr, t0):
     if not tr:
         return no_update, no_update
     return "solar", int(np.clip(round(tr["dep_jd"] - t0), 0, WINDOW_DAYS))
+
+
+@callback(Output("neo-download", "data"), Input("transfer-download", "n_clicks"),
+          State("neo-transfer", "data"), prevent_initial_call=True)
+def download_transfer(_n, tr):
+    row = _row(tr["pdes"]) if tr else None
+    if row is None:
+        return no_update
+    name = f"transfer_{_short_name(row)}_{jd_to_date(tr['dep_jd'])}.csv".replace(" ", "_")
+    return {"content": transfer_csv(tr, row), "filename": name}
 
 
 clientside_callback(ClientsideFunction("solar", "render"), Output("neo-date", "children"),
@@ -405,4 +525,8 @@ clientside_callback(ClientsideFunction("solar", "tick"), Output("neo-day", "valu
 clientside_callback(ClientsideFunction("solar", "togglePlay"),
                     Output("neo-ticker", "disabled"), Output("neo-play", "children"),
                     Input("neo-play", "n_clicks"), State("neo-ticker", "disabled"),
+                    prevent_initial_call=True)
+
+clientside_callback(ClientsideFunction("solar", "saveImage"), Output("neo-save", "title"),
+                    Input("neo-save", "n_clicks"), State("neo-view", "value"),
                     prevent_initial_call=True)

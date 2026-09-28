@@ -213,3 +213,26 @@ details.more summary { color: var(--navy); font-weight: 600; }
 .space-card .dash-slider-mark { color: #9fb0c8 !important; }
 .space-card .dash-slider-mark::before, .space-card .dash-slider-mark::after { background: rgba(255, 255, 255, 0.3) !important; }
 #neo-table td, #neo-table th { font-size: 11.5px !important; }
+
+/* ----- additions: approach, export, jump-to-date, how-it-works ----- */
+.approach { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); flex-wrap: wrap; }
+.chip-accent { background: var(--accent-soft); border-color: #b9cdf0; color: var(--accent); }
+.chip-accent b { color: var(--navy); }
+.btn-ghost-dark { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.18); color: #dfe7f3; }
+.btn-ghost-dark:hover { border-color: #4cc9f0; color: #fff; }
+.timebar.timebar-dark { grid-template-columns: 36px 1fr 210px; }
+.date-box { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.inp-jump { font-size: 12px; padding: 5px 8px; text-align: right; }
+.pc-message { color: #ffb38a; font-size: 13px; font-weight: 500; min-height: 0; }
+.pc-message:not(:empty) { margin: 2px 0 8px; }
+.chip-warn { border-color: #ff8a3d !important; color: #ffb38a !important; }
+details.info { margin-top: 12px; }
+details.info summary { cursor: pointer; font-size: 13px; font-weight: 600; list-style: none; color: var(--navy); }
+details.info summary::before { content: "\24D8  "; color: var(--accent); }
+details.info ul { margin: 8px 0 0; padding-left: 20px; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
+details.info li { margin-bottom: 4px; }
+details.info-dark { border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 10px; }
+details.info-dark summary { color: #dfe7f3; }
+details.info-dark summary::before { color: #4cc9f0; }
+details.info-dark ul { color: #9fb0c8; }
+details.info-dark code { color: #4cc9f0; }

@@ -2,8 +2,10 @@
 Near-Earth asteroid catalog from the JPL Small-Body Database (SBDB).
 
 A snapshot is bundled in data/neo_asteroids.csv.gz so the app works
-offline; fetch_catalog() refreshes it from the SBDB Query API
-(https://ssd-api.jpl.nasa.gov/doc/sbdb_query.html).
+offline (and the tests are reproducible). fetch_catalog() downloads a fresh
+copy from the SBDB Query API (https://ssd-api.jpl.nasa.gov/doc/sbdb_query.html)
+into data/neo_asteroids_latest.csv.gz, which is not tracked by git and,
+when present, is what the app loads (see catalog_path()).
 
 Elements are osculating heliocentric elements referred to the ecliptic and
 mean equinox of J2000 (the same frame as helio.planets), at each object's
@@ -19,7 +21,6 @@ H <= 22 (roughly 140 m or larger).
 """
 
 import gzip
-import io
 import json
 import os
 import urllib.parse
@@ -33,6 +34,7 @@ from core.constants import AU
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 SNAPSHOT = os.path.join(DATA_DIR, "neo_asteroids.csv.gz")
+LATEST = os.path.join(DATA_DIR, "neo_asteroids_latest.csv.gz")
 API = "https://ssd-api.jpl.nasa.gov/sbdb_query.api"
 FIELDS = ["spkid", "full_name", "pdes", "name", "class", "pha", "H", "diameter",
           "a", "e", "i", "om", "w", "ma", "epoch", "moid", "q", "ad", "per_y"]
@@ -41,7 +43,12 @@ CLASS_NAMES = {"ATE": "Aten", "APO": "Apollo", "AMO": "Amor", "IEO": "Atira"}
 LUNAR_DISTANCE_AU = 384400.0 / AU
 
 
-def fetch_catalog(path=SNAPSHOT, timeout=120):
+def catalog_path():
+    """The refreshed catalog if one was downloaded, else the bundled snapshot."""
+    return LATEST if os.path.exists(LATEST) else SNAPSHOT
+
+
+def fetch_catalog(path=LATEST, timeout=120):
     """Download all near-Earth asteroids from SBDB and save a gzip CSV."""
     query = urllib.parse.urlencode({"fields": ",".join(FIELDS), "sb-group": "neo",
                                     "sb-kind": "a", "full-prec": "true"})
@@ -49,9 +56,11 @@ def fetch_catalog(path=SNAPSHOT, timeout=120):
         payload = json.load(resp)
     df = pd.DataFrame(payload["data"], columns=payload["fields"])
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    with gzip.open(path, "wt", encoding="utf-8", newline="") as f:
+    tmp = path + ".part"  # write then rename, so a failed download never leaves a broken file
+    with gzip.open(tmp, "wt", encoding="utf-8", newline="") as f:
         f.write(f"# JPL SBDB near-Earth asteroids, retrieved {stamp}, {len(df)} objects\n")
         df.to_csv(f, index=False)
+    os.replace(tmp, path)
     return load_catalog(path)
 
 

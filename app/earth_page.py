@@ -79,6 +79,55 @@ def station_label(ecef):
             f"{abs(lon):.2f}°{'E' if lon >= 0 else 'W'}")
 
 
+HOW_IT_WORKS = [
+    html.Li("Each observation (UTC, azimuth, elevation, range) is converted from the station's "
+            "topocentric frame to Earth-fixed coordinates, then to the inertial frame (ECI) using "
+            "Greenwich sidereal time at that observation's own time."),
+    html.Li(["The two chosen positions and the time between them define Lambert's problem, solved with "
+             "the project's universal-variable solver ", html.Code("lamsolbert"),
+             " (zero-revolution transfer). Its velocities give the classical orbital elements."]),
+    html.Li("The fit column propagates the solved orbit (two-body Kepler) to every other observation "
+            "time and reports how far it passes from that observation."),
+    html.Li("Assumptions: two-body motion (no J2, drag or third bodies), UTC used as UT1 for sidereal "
+            "time, WGS84 Earth. Observations more than one orbit apart need multi-revolution Lambert, "
+            "which is not implemented."),
+]
+
+
+def results_csv(sol, solution, rows):
+    """Solved orbit and inputs as 'quantity,value,unit' rows, for the report."""
+    el = sol.elements
+
+    def vec(v):
+        return " ".join(f"{x:.6f}" for x in v)
+
+    def ang(v):
+        return "undefined" if v is None else f"{v:.6f}"
+    lines = [
+        ("epoch of r1 (UTC)", solution["epoch"] or "not given", ""),
+        ("time of flight", f"{sol.tof_s:.3f}", "s"),
+        ("direction", "prograde" if solution["prograde"] else "retrograde", ""),
+        ("r1 (ECI)", vec(sol.r1), "km"), ("v1 (ECI)", vec(sol.v1), "km/s"),
+        ("r2 (ECI)", vec(sol.r2), "km"), ("v2 (ECI)", vec(sol.v2), "km/s"),
+        ("semi-major axis a", f"{el['a']:.6f}", "km"), ("eccentricity e", f"{el['e']:.8f}", ""),
+        ("inclination i", ang(el["i"]), "deg"), ("RAAN", ang(el["raan"]), "deg"),
+        ("argument of perigee", ang(el["argp"]), "deg"), ("true anomaly", ang(el["nu"]), "deg"),
+        ("specific angular momentum h", f"{el['h']:.6f}", "km^2/s"),
+        ("period", f"{sol.period_s:.3f}" if sol.is_closed else "open orbit", "s"),
+        ("perigee altitude", f"{sol.perigee_alt_km:.3f}", "km"),
+        ("apogee altitude", f"{sol.apogee_alt_km:.3f}" if sol.is_closed else "n/a", "km"),
+    ]
+    if solution["station"] is not None:
+        lines.append(("station (ECEF)", vec(solution["station"]), "km"))
+        for i, r in enumerate(rows or []):
+            lines.append((f"obs {i + 1} (UTC, az, el, range, fit)",
+                          f"{r.get('time')}; {r.get('az')}; {r.get('el')}; {r.get('range')}; {r.get('fit', '')}",
+                          "-, deg, deg, km, km"))
+    for note in el["notes"]:
+        lines.append(("note", note, ""))
+    return "quantity,value,unit\n" + "\n".join(f'"{q}","{v}","{u}"' for q, v, u in lines) + "\n"
+
+
 # ----------------------------------------------------------------------
 # Layout
 # ----------------------------------------------------------------------
@@ -208,8 +257,9 @@ def layout():
                                        {"label": "Station", "value": "station"}]),
             ]),
         ]),
-        dcc.Graph(id="orbit-graph", className="graph", config={"displaylogo": False,
-                                                                "modeBarButtonsToRemove": ["toImage"]}),
+        dcc.Graph(id="orbit-graph", className="graph", config={"displaylogo": False, "modeBarButtonsToRemove": ["sendDataToCloud"],
+                                                                "toImageButtonOptions": {"format": "png", "scale": 2,
+                                                                                         "filename": "orbit_view"}}),
         html.Div(className="timebar", children=[
             html.Button("▶", id="play", className="btn btn-icon btn-primary", title="Play / pause"),
             html.Div(className="slider-wrap", children=[
@@ -224,11 +274,19 @@ def layout():
     details = html.Details(className="card more", children=[
         html.Summary("State vectors and notes"),
         html.Div(id="details"),
+        html.Button("Download results (.csv)", id="earth-download-btn", className="btn btn-small btn-outline",
+                    style={"marginTop": "10px"}),
+        dcc.Download(id="earth-download"),
+    ])
+
+    how = html.Details(className="card info", children=[
+        html.Summary("How it works"),
+        html.Ul(HOW_IT_WORKS),
     ])
 
     return html.Div(className="page", children=[
         html.Div(className="col", children=[inputs_card, status]),
-        html.Div(className="col", children=[readouts_card, view_card, details]),
+        html.Div(className="col", children=[readouts_card, view_card, details, how]),
         dcc.Store(id="earth-solution"),
         dcc.Store(id="earth-track"),
         dcc.Store(id="coast-data", data=globe_payload()),
@@ -499,3 +557,14 @@ clientside_callback(ClientsideFunction("orbit", "togglePlay"),
 clientside_callback(ClientsideFunction("orbit", "render"), Output("time-readout", "children"),
                     Input("time-k", "value"), Input("earth-track", "data"),
                     State("view", "value"), State("frame", "value"), State("coast-data", "data"))
+
+
+@callback(Output("earth-download", "data"), Input("earth-download-btn", "n_clicks"),
+          State("earth-solution", "data"), State("obs-table", "data"), State("mode", "value"),
+          prevent_initial_call=True)
+def download_results(_n, solution, rows, mode):
+    if not solution:
+        return no_update
+    sol, _ = _rebuild(solution)
+    return {"content": results_csv(sol, solution, rows if mode == "obs" else None),
+            "filename": "orbit_solution.csv"}
