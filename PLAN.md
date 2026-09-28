@@ -36,7 +36,7 @@ main.py               launches the Dash app
 - [x] **1. Core** — package layout; constants; Kepler propagation;
       speed up Lambert long transfers (results unchanged); planet ephemeris;
       pytest suite (Vallado checks, round-trips, Lambert-vs-propagation).
-- [ ] **2. Earth scope UI** — Dash app shell with two tabs.
+- [x] **2. Earth scope UI** — Dash app shell with two tabs.
       Inputs: editable observation table (add/remove rows, paste CSV,
       choose pair), AER or vector mode, presets, live solve with inline
       validation, TOF slider, prograde/retrograde toggle.

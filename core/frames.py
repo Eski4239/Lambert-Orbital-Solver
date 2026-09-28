@@ -181,3 +181,62 @@ if __name__ == "__main__":
     lat, lon, alt = station_ecef_to_geodetic(station_ecef)
     print(f"Station ECEF: {station_ecef} km")
     print(f"Station geodetic: lat={lat:.4f} deg, lon={lon:.4f} deg, alt={alt:.4f} km")
+
+
+# ----------------------------------------------------------------------
+# Inverse direction (v2): ECI -> ECEF -> geodetic / topocentric AER.
+# Used for ground tracks and for generating synthetic observations from a
+# known orbit (UI presets, round-trip tests). Vectorised over points.
+# ----------------------------------------------------------------------
+def eci_to_ecef(r_eci, gmst_deg):
+    """
+    Rotate ECI position(s) into ECEF: the inverse of the final step of
+    aer_to_eci, i.e. a rotation about Z by -GMST.
+
+    r_eci : shape (3,) or (N, 3). gmst_deg : scalar or shape (N,).
+    """
+    r_eci = np.asarray(r_eci, dtype=float)
+    theta = np.radians(np.asarray(gmst_deg, dtype=float))
+    ct, st = np.cos(theta), np.sin(theta)
+    x, y, z = r_eci[..., 0], r_eci[..., 1], r_eci[..., 2]
+    return np.stack([ct * x + st * y, -st * x + ct * y, z], axis=-1)
+
+
+def ecef_to_latlon(r_ecef):
+    """
+    Vectorised ECEF (km) -> WGS84 geodetic latitude, longitude (deg) and
+    altitude (km), using Bowring's closed-form approximation (sub-metre for
+    near-Earth altitudes). For single precise station conversions, see
+    ecef_to_geodetic (iterative).
+    """
+    r = np.asarray(r_ecef, dtype=float)
+    x, y, z = r[..., 0], r[..., 1], r[..., 2]
+    b = R_EARTH * (1 - F_EARTH)
+    ep2 = (R_EARTH**2 - b**2) / b**2
+    p = np.hypot(x, y)
+    th = np.arctan2(z * R_EARTH, p * b)
+    lat = np.arctan2(z + ep2 * b * np.sin(th) ** 3,
+                     p - E2_EARTH * R_EARTH * np.cos(th) ** 3)
+    lon = np.arctan2(y, x)
+    N = R_EARTH / np.sqrt(1 - E2_EARTH * np.sin(lat) ** 2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        alt = np.where(np.abs(np.cos(lat)) > 1e-10, p / np.cos(lat) - N,
+                       np.abs(z) - b)
+    return np.degrees(lat), np.degrees(lon), alt
+
+
+def eci_to_aer(r_eci, station_ecef_km, gmst_deg):
+    """
+    ECI position(s) -> topocentric azimuth, elevation (deg) and slant range
+    (km) as seen from the station: the exact inverse of aer_to_eci.
+    """
+    station_ecef_km = np.asarray(station_ecef_km, dtype=float)
+    lat_deg, lon_deg, _alt = station_ecef_to_geodetic(station_ecef_km)
+    R = _sez_to_ecef_rotation(lat_deg, lon_deg)
+    rho_ecef = eci_to_ecef(r_eci, gmst_deg) - station_ecef_km
+    rho_sez = rho_ecef @ R  # R is orthonormal: R^T applied row-wise
+    s, e, z = rho_sez[..., 0], rho_sez[..., 1], rho_sez[..., 2]
+    rng = np.linalg.norm(rho_sez, axis=-1)
+    el = np.degrees(np.arcsin(np.clip(z / rng, -1.0, 1.0)))
+    az = np.mod(np.degrees(np.arctan2(e, -s)), 360.0)
+    return az, el, rng
