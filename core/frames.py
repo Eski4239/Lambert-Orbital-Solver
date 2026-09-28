@@ -240,3 +240,12 @@ def eci_to_aer(r_eci, station_ecef_km, gmst_deg):
     el = np.degrees(np.arcsin(np.clip(z / rng, -1.0, 1.0)))
     az = np.mod(np.degrees(np.arctan2(e, -s)), 360.0)
     return az, el, rng
+
+
+def geodetic_to_ecef(lat_deg, lon_deg, alt_km=0.0):
+    """WGS84 geodetic latitude/longitude (deg) and altitude (km) -> ECEF (km)."""
+    lat, lon = np.radians(lat_deg), np.radians(lon_deg)
+    N = R_EARTH / np.sqrt(1 - E2_EARTH * np.sin(lat) ** 2)
+    return np.stack([(N + alt_km) * np.cos(lat) * np.cos(lon),
+                     (N + alt_km) * np.cos(lat) * np.sin(lon),
+                     (N * (1 - E2_EARTH) + alt_km) * np.sin(lat)], axis=-1)

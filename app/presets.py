@@ -1,12 +1,13 @@
 """
-Scenario presets for the Earth-orbit page.
+Ground stations and scenario presets for the Earth-orbit page.
 
-The assignment and Vallado cases are the published inputs. The others are
-synthetic: a known reference orbit is propagated, observed from the
-assignment's ground station (core.frames.eci_to_aer) at times when it is
-above 10 deg elevation, and rounded to the assignment's precision (0.01 deg,
-1 m). Solving them should therefore recover the reference orbit to within
-the rounding error, which the fit-error column makes visible.
+The assignment and Vallado cases are the published inputs; the assignment
+keeps its own station, since its Az/El/Range values were measured from
+there. The others are synthetic: a known reference orbit is propagated,
+observed from Madrid (core.frames.eci_to_aer) at times when it is above
+10 deg elevation, and rounded to the assignment's precision (0.01 deg, 1 m).
+Solving them should therefore recover the reference orbit to within the
+rounding error, which the fit-error column makes visible.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -14,17 +15,32 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 
 from core.constants import MU_EARTH, R_EARTH
-from core.frames import eci_to_aer
+from core.frames import eci_to_aer, geodetic_to_ecef
 from core.kepler import coe_to_rv, propagate_rv
 from core.time_utils import gmst_degrees
 
-STATION_ECEF = (1344.143, 6068.601, 1429.311)
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
 _EPOCH = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
 
+# name -> ECEF (km). Madrid: 40.4168 N, 3.7038 W, 657 m (WGS84).
+STATIONS = {
+    "Madrid, Spain": tuple(round(float(v), 3) for v in geodetic_to_ecef(40.4168, -3.7038, 0.657)),
+    "Assignment station": (1344.143, 6068.601, 1429.311),
+}
+DEFAULT_STATION = "Madrid, Spain"
+STATION_ECEF = STATIONS[DEFAULT_STATION]
+
+
+def station_name(ecef):
+    """Known station name for an ECEF position (within 1 km), else None."""
+    for name, pos in STATIONS.items():
+        if np.linalg.norm(np.subtract(ecef, pos)) < 1.0:
+            return name
+    return None
+
 
 def _observe(a, e, i, raan, argp, nu, n_obs, min_gap_s, search_s, step_s=60.0,
-             max_span_s=None):
+             max_span_s=None, station=STATION_ECEF):
     """
     First n_obs visible times, at least min_gap_s apart and (if given) all
     within max_span_s of the first, as table rows. The span limit keeps
@@ -40,7 +56,7 @@ def _observe(a, e, i, raan, argp, nu, n_obs, min_gap_s, search_s, step_s=60.0,
             continue
         when = _EPOCH + timedelta(seconds=float(t))
         r, _ = propagate_rv(r0, v0, float(t), MU_EARTH)
-        az, el, rng = eci_to_aer(r, STATION_ECEF, gmst_degrees(when))
+        az, el, rng = eci_to_aer(r, station, gmst_degrees(when))
         if el < 10.0:
             continue
         first = t if first is None else first
@@ -57,50 +73,55 @@ def _vectors(r1, r2, tof, epoch=""):
             "tof": f"{tof:g}", "epoch": epoch}
 
 
+# Reference orbits for the synthetic presets: (a km, e, i, raan, argp, nu) deg.
+REFERENCE_ORBITS = {
+    "leo": (R_EARTH + 420, 0.0005, 51.6, 250.0, 90.0, 10.0),
+    "gto": ((R_EARTH + 250 + R_EARTH + 35786) / 2, 0.73, 6.0, 80.0, 180.0, 60.0),
+    "molniya": (26600.0, 0.74, 63.4, 40.0, 270.0, 120.0),
+    # Geostationary above Madrid's longitude at the epoch.
+    "geo": (42164.0, 0.0002, 0.05, 0.0, 0.0, (-3.7038 + gmst_degrees(_EPOCH)) % 360),
+}
+
+
 def build_presets():
-    presets = {
+    ref = REFERENCE_ORBITS
+    return {
+        "molniya": {
+            "label": "Molniya orbit · 4 observations",
+            "mode": "obs", "station": DEFAULT_STATION,
+            "rows": _observe(*ref["molniya"], n_obs=4, min_gap_s=2400, search_s=86400),
+        },
+        "leo": {
+            "label": "Low Earth orbit (ISS-like) · one pass",
+            "mode": "obs", "station": DEFAULT_STATION,
+            "rows": _observe(*ref["leo"], n_obs=3, min_gap_s=120, search_s=2 * 86400,
+                             step_s=30.0, max_span_s=600),
+        },
+        "gto": {
+            "label": "Geostationary transfer orbit · 3 observations",
+            "mode": "obs", "station": DEFAULT_STATION,
+            "rows": _observe(*ref["gto"], n_obs=3, min_gap_s=1800, search_s=86400),
+        },
+        "geo": {
+            "label": "Geostationary satellite · 3 observations",
+            "mode": "obs", "station": DEFAULT_STATION,
+            "rows": _observe(*ref["geo"], n_obs=3, min_gap_s=4 * 3600, search_s=86400),
+        },
         "assignment": {
-            "label": "Assignment data (2 observations)",
-            "mode": "obs",
+            "label": "Assignment data (its own station)",
+            "mode": "obs", "station": "Assignment station",
             "rows": [
                 {"time": "2023-04-02 00:30:00", "az": "132.67", "el": "32.44", "range": "16945.450"},
                 {"time": "2023-04-02 03:00:00", "az": "123.08", "el": "50.06", "range": "37350.340"},
             ],
         },
         "vallado": {
-            "label": "Vallado Example 5-5 (vectors)",
-            "mode": "vec",
+            "label": "Vallado Example 5-5 · position vectors",
+            "mode": "vec", "station": DEFAULT_STATION,
             "vectors": _vectors([15945.34, 0.0, 0.0], [12214.83899, 10249.46731, 0.0], 4560.0),
         },
-        "leo": {
-            "label": "Low Earth orbit, ISS-like (3 obs, one pass)",
-            "mode": "obs",
-            "rows": _observe(R_EARTH + 420, 0.0005, 51.6, 250.0, 90.0, 10.0,
-                             n_obs=3, min_gap_s=120, search_s=2 * 86400,
-                             step_s=30.0, max_span_s=600),
-        },
-        "gto": {
-            "label": "Geostationary transfer orbit (3 obs)",
-            "mode": "obs",
-            "rows": _observe((R_EARTH + 250 + R_EARTH + 35786) / 2, 0.73, 6.0, 80.0, 180.0, 60.0,
-                             n_obs=3, min_gap_s=1800, search_s=86400),
-        },
-        "molniya": {
-            "label": "Molniya orbit (4 obs)",
-            "mode": "obs",
-            "rows": _observe(26600.0, 0.74, 63.4, 40.0, 270.0, 120.0,
-                             n_obs=4, min_gap_s=2400, search_s=86400),
-        },
-        "geo": {
-            "label": "Geostationary satellite (3 obs)",
-            "mode": "obs",
-            "rows": _observe(42164.0, 0.0002, 0.05, 0.0, 0.0,
-                             (77.5 + gmst_degrees(_EPOCH)) % 360,
-                             n_obs=3, min_gap_s=4 * 3600, search_s=86400),
-        },
     }
-    return presets
 
 
 PRESETS = build_presets()
-DEFAULT_PRESET = "assignment"
+DEFAULT_PRESET = "molniya"

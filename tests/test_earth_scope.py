@@ -115,21 +115,26 @@ def test_parse_time_formats():
         assert parse_time(text) == want
 
 
-@pytest.mark.parametrize("key, a_ref, e_ref, i_ref", [
-    ("leo", 6798.137, 0.0005, 51.6),
-    ("gto", 24399.137, 0.73, 6.0),
-    ("molniya", 26600.0, 0.74, 63.4),
-    ("geo", 42164.0, 0.0002, 0.05),
-])
-def test_presets_recover_reference_orbit(key, a_ref, e_ref, i_ref):
+@pytest.mark.parametrize("key", ["leo", "gto", "molniya", "geo"])
+def test_presets_recover_reference_orbit(key):
     """Synthetic presets must solve back to the orbit they were generated from."""
     from app.earth_page import parse_observations
-    from app.presets import PRESETS, STATION_ECEF
-    obs, errors = parse_observations(PRESETS[key]["rows"])
+    from app.presets import PRESETS, REFERENCE_ORBITS, STATIONS
+    a_ref, e_ref, i_ref = REFERENCE_ORBITS[key][:3]
+    preset = PRESETS[key]
+    obs, errors = parse_observations(preset["rows"])
     assert not errors
-    sol, residuals = solve_from_observations(obs, STATION_ECEF, 0, len(obs) - 1)
+    sol, residuals = solve_from_observations(obs, STATIONS[preset["station"]], 0, len(obs) - 1)
     el = sol.elements
     assert el["a"] == pytest.approx(a_ref, rel=2e-3)
     assert el["e"] == pytest.approx(e_ref, abs=2e-3)
     assert el["i"] == pytest.approx(i_ref, abs=0.05)
     assert max(residuals) < 10.0  # km: rounding to 0.01 deg / 1 m only
+
+
+def test_default_station_is_madrid():
+    from app.earth_page import station_label
+    from app.presets import DEFAULT_PRESET, PRESETS, STATIONS
+    station = STATIONS[PRESETS[DEFAULT_PRESET]["station"]]
+    assert station_label(station) == "Madrid, Spain · 40.42°N 3.70°W"
+    assert station_label((1344.143, 6068.601, 1429.311)).startswith("Assignment station")

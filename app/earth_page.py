@@ -14,9 +14,9 @@ import numpy as np
 from dash import (ClientsideFunction, Input, Output, State, callback, clientside_callback,
                   ctx, dash_table, dcc, html, no_update)
 
-from app.earth_figures import (N_SAMPLES, coast_payload, figure_3d, figure_ground_track,
+from app.earth_figures import (N_SAMPLES, figure_3d, figure_ground_track, globe_payload,
                                sample_track, track_payload)
-from app.presets import DEFAULT_PRESET, PRESETS, STATION_ECEF, TIME_FMT
+from app.presets import DEFAULT_PRESET, PRESETS, STATIONS, TIME_FMT, station_name
 from core.frames import station_ecef_to_geodetic
 from core.solve import Observation, observations_to_eci, solve_orbit
 
@@ -71,6 +71,14 @@ def parse_observations(rows):
     return (None if errors else obs), errors
 
 
+def station_label(ecef):
+    """'Madrid, Spain · 40.42°N 3.70°W' (or 'Custom station · ...')."""
+    lat, lon, _ = station_ecef_to_geodetic(ecef)
+    name = station_name(ecef) or "Custom station"
+    return (f"{name} · {abs(lat):.2f}°{'N' if lat >= 0 else 'S'} "
+            f"{abs(lon):.2f}°{'E' if lon >= 0 else 'W'}")
+
+
 # ----------------------------------------------------------------------
 # Layout
 # ----------------------------------------------------------------------
@@ -81,7 +89,7 @@ def _seg(id_, options, value):
 def _vec_row(label, prefix, values):
     return html.Div(className="field-row", children=[
         html.Span(label, className="field-label"),
-        *[dcc.Input(id=f"{prefix}-{a}", value=v, debounce=True, className="inp", type="text")
+        *[dcc.Input(id=f"{prefix}-{a}", value=v, debounce=False, className="inp", type="text")
           for a, v in zip(AXES, values)],
     ])
 
@@ -97,14 +105,13 @@ def _readout(label, id_, unit=""):
 def layout():
     preset = PRESETS[DEFAULT_PRESET]
     vec = PRESETS["vallado"]["vectors"]
-    lat, lon, _ = station_ecef_to_geodetic(STATION_ECEF)
+    station = STATIONS[preset["station"]]
 
     inputs_card = html.Div(className="card", children=[
         html.Div("Scenario", className="card-title"),
         dcc.Dropdown(id="preset", options=[{"label": p["label"], "value": k} for k, p in PRESETS.items()],
                      value=DEFAULT_PRESET, clearable=False, searchable=False),
-        html.Div(style={"height": "14px"}),
-        html.Div("Input", className="card-title"),
+        html.Div("Input", className="card-title section"),
         _seg("mode", [{"label": "Observations", "value": "obs"},
                       {"label": "Position vectors", "value": "vec"}], preset["mode"]),
         html.Div(style={"height": "12px"}),
@@ -112,15 +119,14 @@ def layout():
         # --- Observation mode ---
         html.Div(id="obs-panel", children=[
             html.Details(className="station", children=[
-                html.Summary(id="station-summary",
-                             children=f"Ground station · {lat:.2f}°N {lon:.2f}°E"),
+                html.Summary(id="station-summary", children=station_label(station)),
                 html.Div(className="station-body", children=[
                     html.Div(className="field-row", children=[
                         html.Span("ECEF", className="field-label"),
-                        *[dcc.Input(id=f"st-{a}", value=str(v), debounce=True, className="inp", type="text")
-                          for a, v in zip(AXES, STATION_ECEF)],
+                        *[dcc.Input(id=f"st-{a}", value=str(v), debounce=False, className="inp", type="text")
+                          for a, v in zip(AXES, station)],
                     ]),
-                    html.P("Station position, Earth-fixed, km.", className="hint"),
+                    html.P("Earth-fixed position, km.", className="hint"),
                 ]),
             ]),
             dash_table.DataTable(
@@ -134,18 +140,18 @@ def layout():
                             "minWidth": "52px", "whiteSpace": "nowrap"},
                 style_cell_conditional=[{"if": {"column_id": "time"}, "textAlign": "left", "minWidth": "140px"},
                                         {"if": {"column_id": "fit"}, "color": "#667383"}],
-                style_header={"backgroundColor": "#f7f9fc", "fontWeight": 500},
+                style_header={"backgroundColor": "#eef3fa", "fontWeight": 700,
+                              "borderBottom": "2px solid #c9d6ea"},
                 css=[{"selector": ".dash-cell-value", "rule": "font-family: var(--mono);"}],
             ),
             html.Div(className="row between", style={"marginTop": "8px"}, children=[
-                html.Button("+ Add observation", id="add-row", className="btn"),
+                html.Button("+ Add observation", id="add-row", className="btn btn-outline"),
                 html.Div(className="pair-select", children=[
                     "Solve", dcc.Dropdown(id="pair-a", clearable=False, searchable=False),
                     "→", dcc.Dropdown(id="pair-b", clearable=False, searchable=False),
                 ]),
             ]),
-            html.P("Paste rows from a spreadsheet. The fit column shows how far the solved "
-                   "orbit passes from each observation.", className="hint"),
+            html.P("Tip: paste rows straight from a spreadsheet.", className="hint"),
         ]),
 
         # --- Vector mode ---
@@ -155,29 +161,28 @@ def layout():
             html.P("ECI position vectors, km.", className="hint", style={"marginBottom": "10px"}),
             html.Div(className="field-row two", children=[
                 html.Span("Time of flight", className="field-label"),
-                dcc.Input(id="tof", value=vec["tof"], debounce=True, className="inp", type="text"),
+                dcc.Input(id="tof", value=vec["tof"], debounce=False, className="inp", type="text"),
             ]),
             html.Div(className="field-row two", children=[
                 html.Span("Epoch (optional)", className="field-label"),
-                dcc.Input(id="epoch", value=vec["epoch"], debounce=True, className="inp", type="text",
+                dcc.Input(id="epoch", value=vec["epoch"], debounce=False, className="inp", type="text",
                           placeholder="YYYY-MM-DD HH:MM:SS"),
             ]),
             html.Div("Scale time of flight", className="field-label", style={"marginTop": "8px"}),
             dcc.Slider(id="tof-scale", min=0.5, max=2.0, step=0.01, value=1.0,
                        marks={0.5: "×0.5", 1.0: "×1", 1.5: "×1.5", 2.0: "×2"},
-                       updatemode="mouseup", allow_direct_input=False),
+                       updatemode="drag", allow_direct_input=False),
             html.P(id="tof-effective", className="hint"),
         ]),
 
-        html.Div(style={"height": "12px"}),
-        html.Div("Direction of motion", className="field-label", style={"marginBottom": "6px"}),
+        html.Div("Direction of motion", className="card-title section"),
         _seg("direction", [{"label": "Prograde", "value": "pro"},
                            {"label": "Retrograde", "value": "retro"}], "pro"),
     ])
 
     status = html.Div(id="status", className="status", children=[html.Span(className="dot"), "Ready"])
 
-    readouts_card = html.Div(className="card", children=[
+    readouts_card = html.Div(className="card readouts-card", children=[
         html.Div(className="readouts", children=[
             _readout("Semi-major axis", "ro-a", "km"),
             _readout("Eccentricity", "ro-e"),
@@ -206,7 +211,7 @@ def layout():
         dcc.Graph(id="orbit-graph", className="graph", config={"displaylogo": False,
                                                                 "modeBarButtonsToRemove": ["toImage"]}),
         html.Div(className="timebar", children=[
-            html.Button("▶", id="play", className="btn btn-icon", title="Play / pause"),
+            html.Button("▶", id="play", className="btn btn-icon btn-primary", title="Play / pause"),
             html.Div(className="slider-wrap", children=[
                 dcc.Slider(id="time-k", min=0, max=N_SAMPLES - 1, step=1, value=0, marks=None,
                            updatemode="drag", allow_direct_input=False),
@@ -226,7 +231,7 @@ def layout():
         html.Div(className="col", children=[readouts_card, view_card, details]),
         dcc.Store(id="earth-solution"),
         dcc.Store(id="earth-track"),
-        dcc.Store(id="coast-data", data=coast_payload()),
+        dcc.Store(id="coast-data", data=globe_payload()),
     ])
 
 
@@ -240,6 +245,7 @@ def layout():
     Output("r2-x", "value"), Output("r2-y", "value"), Output("r2-z", "value"),
     Output("tof", "value"), Output("epoch", "value"), Output("tof-scale", "value"),
     Output("pair-a", "value", allow_duplicate=True), Output("pair-b", "value", allow_duplicate=True),
+    *[Output(f"st-{a}", "value") for a in AXES],
     Input("preset", "value"),
     prevent_initial_call=True,
 )
@@ -247,9 +253,11 @@ def load_preset(key):
     p = PRESETS[key]
     if p["mode"] == "obs":
         n = len(p["rows"])
-        return (p["rows"], "obs", *[no_update] * 8, 1.0, 0, n - 1)
+        station = [str(c) for c in STATIONS[p["station"]]]
+        return (p["rows"], "obs", *[no_update] * 8, 1.0, 0, n - 1, *station)
     v = p["vectors"]
-    return (no_update, "vec", *v["r1"], *v["r2"], v["tof"], v["epoch"], 1.0, no_update, no_update)
+    return (no_update, "vec", *v["r1"], *v["r2"], v["tof"], v["epoch"], 1.0, no_update, no_update,
+            *[no_update] * 3)
 
 
 @callback(Output("obs-table", "data", allow_duplicate=True), Input("add-row", "n_clicks"),
@@ -339,9 +347,8 @@ def solve(mode, rows, sx, sy, sz, pa, pb, direction, r1x, r1y, r1z, r2x, r2y, r2
                     bad.add(f"st-{a}")
             if bad:
                 return fail("Ground station position must be three numbers (km).")
-            lat, lon, alt = station_ecef_to_geodetic(station)
-            station_text = (f"Ground station · {abs(lat):.2f}°{'N' if lat >= 0 else 'S'} "
-                            f"{abs(lon):.2f}°{'E' if lon >= 0 else 'W'}")
+            _lat, _lon, alt = station_ecef_to_geodetic(station)
+            station_text = station_label(station)
             if not -50 < alt < 10:
                 return fail(f"Station is {alt:,.0f} km from the Earth's surface: check the ECEF values.")
 
@@ -456,10 +463,12 @@ def render(solution, view, frame, layers, k):
                         station_ecef=solution["station"], k=k)
 
     el = sol.elements
-    sub = [html.Span(["Period", html.B(_hms(sol.period_s) if sol.is_closed else "— (open orbit)")]),
-           html.Span(["Perigee alt.", html.B(f"{sol.perigee_alt_km:,.0f} km")]),
-           html.Span(["Apogee alt.", html.B(f"{sol.apogee_alt_km:,.0f} km" if sol.is_closed else "—")]),
-           html.Span(["Time of flight", html.B(_hms(sol.tof_s))])]
+    sub = [html.Span(["Period", html.B(_hms(sol.period_s) if sol.is_closed else "open orbit")],
+                     className="chip"),
+           html.Span(["Perigee alt.", html.B(f"{sol.perigee_alt_km:,.0f} km")], className="chip"),
+           html.Span(["Apogee alt.", html.B(f"{sol.apogee_alt_km:,.0f} km" if sol.is_closed else "—")],
+                     className="chip"),
+           html.Span(["Time of flight", html.B(_hms(sol.tof_s))], className="chip")]
     banner = [html.Div(w, className="banner") for w in sol.warnings]
 
     def vec(name, v, unit, d):

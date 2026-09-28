@@ -32,8 +32,9 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             Plotly.restyle(gd, { x: [[src.x[k]]], y: [[src.y[k]]], z: [[src.z[k]]] }, [sat]);
           }
           const ci = gd.data.findIndex(function (t) { return t.uid === "coast"; });
-          if (frame === "eci" && ci >= 0 && coast) {
-            // ECEF -> ECI: rotate about Z by +GMST.
+          const ei = gd.data.findIndex(function (t) { return t.uid === "earth"; });
+          if (frame === "eci" && ci >= 0 && ei >= 0 && coast) {
+            // ECEF -> ECI: rotate the globe and coastlines about Z by +GMST.
             const th = track.gmst[k] * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);
             const n = coast.x.length, xs = new Array(n), ys = new Array(n);
             for (let i = 0; i < n; i++) {
@@ -41,7 +42,12 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
               if (x === null) { xs[i] = null; ys[i] = null; continue; }
               xs[i] = c * x - s * y; ys[i] = s * x + c * y;
             }
-            Plotly.restyle(gd, { x: [xs], y: [ys] }, [ci]);
+            const m = coast.earth_x.length, ex = new Array(m), ey = new Array(m);
+            for (let i = 0; i < m; i++) {
+              const x = coast.earth_x[i], y = coast.earth_y[i];
+              ex[i] = c * x - s * y; ey[i] = s * x + c * y;
+            }
+            Plotly.restyle(gd, { x: [xs, ex], y: [ys, ey] }, [ci, ei]);
           }
         }
       }
