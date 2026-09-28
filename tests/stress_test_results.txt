@@ -1,0 +1,85 @@
+==============================================================================
+STRESS TEST RESULTS
+Generated: 2026-09-28T16:36:05.314143+00:00
+==============================================================================
+
+
+--- 1. Baseline regression ---
+[PASS] (EXACT    ) regression vs assignment_answer.py
+         This suite's own independent pipeline run reproduces assignment_answer.py's output to numerical precision (r1 diff=0.00e+00 km, r2 diff=0.00e+00 km, v1 diff=0.00e+00 km/s, v2 diff=0.00e+00 km/s).
+[PASS] (EXACT    ) AER-mode vs vector-mode agreement
+         v1 diff = 0.000e+00 km/s, v2 diff = 0.000e+00 km/s (both < 1e-9 km/s) -- the two input modes drive the solver identically, confirming the GUI does not mis-wire inputs between modes.
+
+--- 2. Known-answer validation ---
+[PASS] (EXACT    ) Vallado example, full pipeline (r,v -> elements)
+         v1/v2 match textbook to 1e-3 km/s; a=10699.568 km, e=0.70221, i=0.000 deg, nu=160.000 deg all match known reference values -- confirms elements.py post-processing does not corrupt a correct solver output.
+[PASS] (EXACT    ) Curtis textbook example (independent source)
+         v1 diff = 0.0001 km/s, v2 diff = 0.0000 km/s (both < 0.05 km/s tolerance, which absorbs the small mu rounding difference between Curtis's textbook value and this project's mu=398600.4418).
+
+--- 3. Geometric edge cases ---
+[WARN] (PHYSICAL ) transfer angle ~180 deg (near-antiparallel)
+         Solver ran and produced energy/momentum-consistent output (energy rel diff=8.43e-12, h rel diff=1.37e-16), BUT this geometry is the classic Lambert ill-conditioned case (orbital plane normal r1 x r2 is nearly zero-magnitude, so the plane is only weakly determined by these two vectors) -- WARN rather than PASS because the result, while self-consistent, is sensitive to input precision here and small perturbations to r1/r2 could swing the solution plane significantly.
+[WARN] (PHYSICAL ) transfer angle ~0 deg (near-parallel)
+         Solver ran; energy/momentum consistency: energy rel diff=0.00e+00, h rel diff=0.00e+00. Physically self-consistent, but WARN (not PASS) because this near-parallel geometry is the same ill-conditioning concern as the near-180 case (A = sin(dtheta)*sqrt(...) -> 0 as dtheta -> 0, so the transfer-orbit parameter is only weakly determined).
+[PASS] (PHYSICAL ) well-conditioned control (~90 deg, 90.0 deg)
+         Solver converged cleanly; energy rel diff=1.18e-16, h rel diff=0.00e+00 (both well within tolerance) -- as expected for a well-conditioned transfer angle, contrasting cleanly against the near-0/near-180 cases above.
+[PASS] (PHYSICAL ) well-conditioned control (~270 deg equivalent, -90.0 deg)
+         Solver converged cleanly; energy rel diff=2.44e-16, h rel diff=0.00e+00 (both well within tolerance) -- as expected for a well-conditioned transfer angle, contrasting cleanly against the near-0/near-180 cases above.
+
+--- 4. Orbit-shape edge cases ---
+[PASS] (PHYSICAL ) near-circular orbit (e ~ 0)
+         e=1.25e-16; argp correctly reported as None (undefined) with an explanatory note, not NaN and not a crash: ['Orbit is near-equatorial (i ~ 0 or 180 deg); RAAN is undefined.', 'Orbit is near-circular (e ~ 0); argument of perigee is undefined.', 'True anomaly measured as argument of latitude / true longitude due to near-circular and/or near-equatorial geometry.']
+[PASS] (PHYSICAL ) near-equatorial orbit (i ~ 0)
+         i=0.00e+00 deg; RAAN correctly reported as None (undefined) with an explanatory note: ['Orbit is near-equatorial (i ~ 0 or 180 deg); RAAN is undefined.', 'Orbit is near-equatorial; argument of perigee is undefined (no ascending node reference).']
+[PASS] (PHYSICAL ) hyperbolic transfer (e > 1)
+         e=3.5000 (>1, hyperbolic, as intended). a=-2800.000 km is negative and finite, which is the correct/standard convention for a hyperbolic orbit's semi-major axis under a=-mu/(2*energy) -- not NaN, not a crash, and not silently reported as if it were a positive elliptical 'a'.
+[PASS] (PHYSICAL ) retrograde orbit (prograde=False)
+         Retrograde solve converged; energy rel diff=2.21e-16, h rel diff=0.00e+00 (self-consistent). prograde and retrograde solutions differ as expected (different transfer arcs) -- |v1_prograde - v1_retrograde| = 14.0862 km/s.
+
+--- 5. Time-of-flight stress ---
+[PASS] (PHYSICAL ) very short dt (30 s)
+         Root-finder converged for a high-angular-rate short-dt case; energy rel diff=0.00e+00, h rel diff=0.00e+00 -- self-consistent, |v1|=10.140 km/s is a physically sane LEO speed.
+[PASS] (PHYSICAL ) very long dt (5 hours)
+         Root-finder converged for a long-dt case spanning multiple orbital periods; energy rel diff=3.52e-16, h rel diff=0.00e+00, |v1|=8.573 km/s (physically sane range) -- note the short-way-only solver (no long-way/multi-rev option, documented in lamsolbert.py) will find *a* valid short-way transfer consistent with this dt, not necessarily 'the' orbit a real multi-revolution scenario would imply; that's a documented design limitation, not a bug.
+[PASS] (RUNS     ) dt = 0
+         Raised ValueError as expected: 'Time of flight dt must be positive.'. Message says 'Time of flight dt must be positive.' -- clear and specific, not a generic divide-by-zero traceback.
+[PASS] (RUNS     ) near-identical observations (same r1,r2)
+         Raised ValueError: ValueError('Lambert geometry degenerate (A=0 or undefined): transfer angle is 0 or 180 deg (e.g. r1 and r2 are parallel/antiparallel, or identical), no unique solution exists.'). Specific, documented degenerate-geometry error (same code path as the A=0 check for 0/180 deg transfer angles).
+
+--- 6. Coordinate-transform edge cases ---
+[PASS] (RUNS     ) elevation = 90 deg (zenith)
+         No crash at zenith; azimuth is correctly irrelevant at El=90 (cos(90 deg)=0 zeroes out the S/E components in the SEZ frame regardless of Az) -- result is identical (0.00e+00 km difference, floating-point noise only) for Az=0 and Az=180, confirming the code handles this convention consistently rather than producing an azimuth-dependent discontinuity at the pole.
+[PASS] (RUNS     ) elevation near 0 deg (horizon)
+         No crash and no discontinuity at a grazing angle: El=0 vs El=1e-6 deg differ by only 1.75e-05 km (expected: nearly identical, since the SEZ transform is smooth through El=0 -- it's not a coordinate singularity the way El=90/pole-type cases can be in other systems).
+[PASS] (RUNS     ) azimuth wraparound (0/360 deg boundary)
+         Az=0 vs Az=360 deg agree to 9.37e-13 km (as expected, since np.cos/np.sin are exactly periodic in the underlying radians conversion); Az=0 vs Az=359.999 deg differ smoothly by 0.0123 km with no discontinuity jump.
+[PASS] (RUNS     ) range = 0 or negative (frames.aer_to_eci)
+         frames.aer_to_eci now validates range > 0 itself and raises a clear ValueError for both range=0 and range=-500, rather than silently returning a physically meaningless position. This validation lives in the core function (not only gui.py's _gather_aer_inputs), so any other caller -- a script, a test, a future extension -- is protected too, not only the GUI.
+
+--- 7. GUI input validation ---
+[PASS] (RUNS     ) non-numeric text in numeric field
+         No crash; a friendly error dialog was shown: [Invalid input] 'Observation 1 azimuth' must be a number (got: 'not_a_number')
+[PASS] (RUNS     ) empty numeric field
+         No crash; a friendly error dialog was shown: [Invalid input] 'Observation 1 azimuth' must be a number (got: '')
+[PASS] (RUNS     ) elevation out of range (120 deg)
+         No crash; a friendly error dialog was shown: [Invalid input] Observation 1 elevation must be within [-90, 90] deg.
+[PASS] (RUNS     ) azimuth outside [0, 360] (400 deg)
+         gui.py now validates azimuth is within [0, 360) the same way it already validated elevation: an error dialog was shown for Az=400 deg: [Invalid input] Observation 1 azimuth must be within [0, 360) deg.
+[PASS] (RUNS     ) malformed datetime string
+         No crash; a friendly error dialog was shown: [Invalid input] 'Observation 1 datetime' must be UTC datetime as YYYY-MM-DD HH:MM:SS (got: 'not-a-date')
+[PASS] (RUNS     ) empty datetime field
+         No crash; a friendly error dialog was shown: [Invalid input] 'Observation 1 datetime' must be UTC datetime as YYYY-MM-DD HH:MM:SS (got: '')
+
+==============================================================================
+SUMMARY
+==============================================================================
+Total cases: 26
+  PASS: 24
+  FAIL: 0
+  WARN: 2
+
+No failing cases.
+
+Warnings (borderline / documented limitations / environment gaps):
+  - [3. Geometric edge cases] transfer angle ~180 deg (near-antiparallel)
+  - [3. Geometric edge cases] transfer angle ~0 deg (near-parallel)
