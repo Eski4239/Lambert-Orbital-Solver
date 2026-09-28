@@ -23,6 +23,8 @@ is applied via ttk.Style so button/label emphasis is consistent and does
 not depend on the OS theme.
 """
 
+import os
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, timezone
@@ -33,10 +35,15 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from time_utils import gmst_degrees
-from frames import aer_to_eci, R_EARTH
-from lamsolbert import lamsolbert
-from elements import rv_to_elements, ECC_TOL
+# Allow `python legacy/gui.py` from anywhere: make the project root importable.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from core.time_utils import gmst_degrees
+from core.frames import aer_to_eci, R_EARTH
+from core.lamsolbert import lamsolbert
+from core.elements import rv_to_elements, ECC_TOL
 
 MU_EARTH = 398600.4418
 

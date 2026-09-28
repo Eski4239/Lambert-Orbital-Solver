@@ -18,7 +18,7 @@ Run directly: `python verify.py`
 """
 
 import numpy as np
-from lamsolbert import lamsolbert
+from core.lamsolbert import lamsolbert
 
 MU_EARTH = 398600.4418
 

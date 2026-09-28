@@ -14,10 +14,10 @@ Output is printed to the console and saved to assignment_answer_results.txt.
 
 from datetime import datetime, timezone
 
-from time_utils import gmst_degrees
-from frames import aer_to_eci
-from lamsolbert import lamsolbert
-from elements import rv_to_elements
+from core.time_utils import gmst_degrees
+from core.frames import aer_to_eci
+from core.lamsolbert import lamsolbert
+from core.elements import rv_to_elements
 
 MU_EARTH = 398600.4418
 

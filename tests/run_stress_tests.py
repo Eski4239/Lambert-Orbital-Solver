@@ -35,10 +35,10 @@ _PROJECT_ROOT = os.path.dirname(_THIS_DIR)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from time_utils import gmst_degrees                      # noqa: E402
-from frames import aer_to_eci, station_ecef_to_geodetic   # noqa: E402
-from lamsolbert import lamsolbert                          # noqa: E402
-from elements import rv_to_elements                        # noqa: E402
+from core.time_utils import gmst_degrees                      # noqa: E402
+from core.frames import aer_to_eci, station_ecef_to_geodetic   # noqa: E402
+from core.lamsolbert import lamsolbert                          # noqa: E402
+from core.elements import rv_to_elements                        # noqa: E402
 
 MU_EARTH = 398600.4418
 
@@ -552,15 +552,21 @@ def section_5():
         speed_sane = 0.1 < np.linalg.norm(v1) < 20.0  # km/s, generous bounds
         assert speed_sane, f"|v1|={np.linalg.norm(v1)} km/s is not physically sane"
 
+        # The solver returns the zero-revolution transfer: the arc r1 -> r2
+        # must take less than one period of the resulting orbit. (Before v2
+        # the unbracketed Newton iteration could drift onto a 1-revolution
+        # root here: |v1| = 8.573 km/s, a = 9870 km, 1.84 periods in dt.)
+        el = rv_to_elements(r1, v1, mu)
+        period = 2 * np.pi * np.sqrt(el["a"] ** 3 / mu)
+        assert dt < period, f"not the zero-rev solution: dt/period = {dt / period:.2f}"
+
         record(section, "very long dt (5 hours)", "PHYSICAL", "PASS",
-                f"Root-finder converged for a long-dt case spanning multiple "
-                f"orbital periods; energy rel diff={ed:.2e}, h rel diff={hd:.2e}, "
-                f"|v1|={np.linalg.norm(v1):.3f} km/s (physically sane range) -- "
-                f"note the short-way-only solver (no long-way/multi-rev option, "
-                f"documented in lamsolbert.py) will find *a* valid short-way "
-                f"transfer consistent with this dt, not necessarily 'the' orbit "
-                f"a real multi-revolution scenario would imply; that's a "
-                f"documented design limitation, not a bug.")
+                f"Root-finder converged for a long-dt case (5 h, several LEO "
+                f"periods); energy rel diff={ed:.2e}, h rel diff={hd:.2e}, "
+                f"|v1|={np.linalg.norm(v1):.3f} km/s (physically sane range). "
+                f"Solution is the zero-revolution transfer (dt = "
+                f"{dt / period:.2f} of its period, a = {el['a']:.0f} km); "
+                f"multi-revolution Lambert is not implemented, by design.")
 
     run_case(section, "very long dt", "PHYSICAL", very_long_dt)
 
@@ -768,7 +774,7 @@ def section_7():
                 f"not a code bug.")
         return
 
-    import gui as gui_module
+    from legacy import gui as gui_module
 
     app = gui_module.LambertGUI()
     app.withdraw()  # keep it off-screen while we drive it programmatically

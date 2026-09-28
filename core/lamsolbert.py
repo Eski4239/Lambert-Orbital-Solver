@@ -9,12 +9,18 @@ and hyperbolic transfer orbits alike, unlike the classical p-iteration
 method which can fail to converge near certain geometries), following
 Vallado, "Fundamentals of Astrodynamics and Applications", Algorithm 58.
 
-Convention: "prograde" (default) means the transfer sweeps through the
-short way (delta true anomaly < 180 deg) when the orbit is assumed
-counter-clockwise as seen from +Z; this is the standard short-way transfer.
-Long-way transfer (prograde=False conceptually swaps to dtheta > 180 deg)
-is not implemented -- only short-way, per the assignment's "sufficient"
-allowance.
+Convention: the direction of motion picks the transfer angle. "prograde"
+(default) means counter-clockwise as seen from +Z, so the transfer angle
+dtheta is whichever of the two geometric angles between r1 and r2 that
+sense of motion sweeps: less than 180 deg when (r1 x r2)_z >= 0, more than
+180 deg otherwise (Curtis, Algorithm 5.2). prograde=False takes the
+clockwise sense. Transfers over 180 deg are therefore handled. Only the
+zero-revolution solution is found (the transfer completes less than one
+revolution); multi-revolution Lambert is not implemented.
+
+Verification: Vallado Example 5-5 (verify.py), plus tests/test_core.py,
+which propagates each solution forward by dt with core.kepler and checks
+it reaches r2, over random Earth-orbit and heliocentric geometries.
 """
 
 import numpy as np
@@ -80,6 +86,15 @@ def lamsolbert(r1_vec, r2_vec, dt, mu=398600.4418, prograde=True,
     if dt <= 0:
         raise ValueError("Time of flight dt must be positive.")
 
+    # A time tolerance below the spacing of doubles near dt can never be
+    # met: heliocentric transfers have dt ~ 1e7-1e8 s, where that spacing
+    # is already ~1e-8 s, so Newton would never "converge" and every call
+    # fell through to the (correct but ~50x slower) bisection fallback.
+    # Floor tol at a few ulps of dt. For Earth-orbit cases (dt ~ 1e4 s)
+    # the floor is ~1e-11 s, below the default 1e-8, so results there are
+    # unchanged.
+    tol = max(tol, 8 * np.finfo(float).eps * dt)
+
     r1 = np.linalg.norm(r1_vec)
     r2 = np.linalg.norm(r2_vec)
 
@@ -138,30 +153,50 @@ def lamsolbert(r1_vec, r2_vec, dt, mu=398600.4418, prograde=True,
         t = (chi**3 * _stumpff_S(z) + A * np.sqrt(y)) / np.sqrt(mu)
         return t
 
-    # --- Find a bracket [z_lo, z_hi] with time_of_flight(z_lo) < dt < time_of_flight(z_hi) ---
-    # z=0 corresponds to the parabolic transfer time; z>0 ellipse, z<0 hyperbola.
-    z_lo, z_hi = -4 * np.pi**2, 4 * np.pi**2
-    # Expand z_hi until y(z_hi) stays positive and t(z_hi) exceeds dt (or cap tries).
-    z = 0.0
-    t_z = time_of_flight(z)
-    tries = 0
-    while t_z is None or t_z > dt:
-        # Need smaller (more negative or less positive) z: shrink toward hyperbolic side.
-        z_hi = z if t_z is not None and t_z > dt else z_hi
-        z -= 0.1
-        t_z = time_of_flight(z)
-        tries += 1
-        if tries > 1000 or z < z_lo:
-            z = z_lo
-            break
+    # --- Root-find t(z) = dt: safeguarded Newton (Newton-bisection) ---
+    # z = 0 is the parabolic transfer, z > 0 elliptic, z < 0 hyperbolic.
+    # For the single-revolution transfer t(z) increases monotonically with
+    # z, from ~0 (the edge of the y(z) < 0 region, which only exists when
+    # A < 0, i.e. transfer angles > 180 deg) up to +inf as z -> 4 pi^2.
+    # So the root is kept inside a bracket [z_lo, z_hi] with
+    # t(z_lo) < dt < t(z_hi), treating y(z) < 0 as "t below dt". Each step
+    # takes the Newton update (derivative from Vallado Eq. 5-43/5-44) when it
+    # stays inside the bracket, and bisects otherwise. This finds the same
+    # root as plain Newton, but cannot diverge or stall, which matters for
+    # transfers > 180 deg: there y(0) < 0 and the old fixed z += 0.1 walk
+    # used up the iteration budget, falling back to a slow grid search.
+    def residual(z):
+        t = time_of_flight(z)
+        return -np.inf if t is None else t - dt
 
-    # Newton's method on z using dt(z) - dt = 0, with derivative from Vallado Eq. 5-43/5-44.
-    z = 0.0
-    converged = False
-    for _ in range(max_iter):
+    # Approach the z = 4 pi^2 asymptote in decades: getting too close makes
+    # 1 - cos(sqrt(z)) round to exactly 0 (so C(z) = 0), which breaks y(z).
+    gap = 1.0
+    while residual(4 * np.pi**2 - gap) <= 0:
+        gap /= 10
+        if gap < 1e-8:
+            raise RuntimeError(
+                "Lambert solver failed to converge: time of flight exceeds the "
+                "single-revolution limit (multi-revolution transfers not supported).")
+    z_hi = 4 * np.pi**2 - gap
+    z_lo = 0.0
+    step = 1.0
+    while residual(z_lo) > 0:
+        # Too slow even at the parabolic limit: the transfer is hyperbolic.
+        z_hi = z_lo
+        z_lo = -step
+        step *= 2
+        if step > 1e7:
+            raise RuntimeError(
+                "Lambert solver failed to converge (no valid bracket found): "
+                "time of flight is shorter than any hyperbolic transfer allows.")
+
+    z = z_lo if y_of_z(z_lo) >= 0 else 0.5 * (z_lo + z_hi)
+    for _ in range(max_iter + 200):
         y = y_of_z(z)
         if y < 0:
-            z += 0.1
+            z_lo = z
+            z = 0.5 * (z_lo + z_hi)
             continue
         Cz = _stumpff_C(z)
         Sz = _stumpff_S(z)
@@ -169,8 +204,11 @@ def lamsolbert(r1_vec, r2_vec, dt, mu=398600.4418, prograde=True,
         t = (chi**3 * Sz + A * np.sqrt(y)) / np.sqrt(mu)
 
         if abs(t - dt) < tol:
-            converged = True
             break
+        if t < dt:
+            z_lo = z
+        else:
+            z_hi = z
 
         if abs(z) > 1e-6:
             dCdz = (1 - z * Sz - 2 * Cz) / (2 * z)
@@ -180,49 +218,18 @@ def lamsolbert(r1_vec, r2_vec, dt, mu=398600.4418, prograde=True,
             dCdz = -1 / 24
             dSdz = -1 / 120
 
-        dtdz = (chi**3 * (dSdz - 3 * Sz * dCdz / (2 * Cz)) +
-                (A / 8) * (3 * Sz * np.sqrt(y) / Cz + A / chi)) / np.sqrt(mu)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            dtdz = (chi**3 * (dSdz - 3 * Sz * dCdz / (2 * Cz)) +
+                    (A / 8) * (3 * Sz * np.sqrt(y) / Cz + A / chi)) / np.sqrt(mu)
+            z_new = z - (t - dt) / dtdz
 
-        if dtdz == 0 or not np.isfinite(dtdz):
-            break
-
-        z_new = z - (t - dt) / dtdz
+        if not np.isfinite(z_new) or not (z_lo < z_new < z_hi):
+            z_new = 0.5 * (z_lo + z_hi)
+        if z_new == z:
+            break  # bracket collapsed to machine precision
         z = z_new
-
-    if not converged:
-        # Fallback: robust bisection on time_of_flight(z) - dt.
-        z_lo, z_hi = -4 * np.pi**2, 4 * np.pi**2 - 1e-6
-        # Search for a valid bracket where f is defined and crosses dt.
-        zs = np.linspace(z_lo, z_hi, 2000)
-        bracket = None
-        prev_z, prev_t = None, None
-        for zc in zs:
-            tc = time_of_flight(zc)
-            if tc is None:
-                prev_z, prev_t = zc, tc
-                continue
-            if prev_t is not None and (prev_t - dt) * (tc - dt) < 0:
-                bracket = (prev_z, zc)
-                break
-            prev_z, prev_t = zc, tc
-        if bracket is None:
-            raise RuntimeError("Lambert solver failed to converge (no valid bracket found).")
-        z_lo, z_hi = bracket
-        for _ in range(200):
-            z_mid = 0.5 * (z_lo + z_hi)
-            t_mid = time_of_flight(z_mid)
-            if t_mid is None:
-                z_lo = z_mid
-                continue
-            if abs(t_mid - dt) < tol:
-                z = z_mid
-                converged = True
-                break
-            if t_mid < dt:
-                z_lo = z_mid
-            else:
-                z_hi = z_mid
-        z = 0.5 * (z_lo + z_hi)
+    else:
+        raise RuntimeError("Lambert solver failed to converge (iteration limit reached).")
 
     y = y_of_z(z)
     Cz = _stumpff_C(z)

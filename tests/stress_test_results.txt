@@ -1,6 +1,6 @@
 ==============================================================================
 STRESS TEST RESULTS
-Generated: 2026-09-28T16:36:05.314143+00:00
+Generated: 2026-09-28T16:48:27.623799+00:00
 ==============================================================================
 
 
@@ -40,7 +40,7 @@ Generated: 2026-09-28T16:36:05.314143+00:00
 [PASS] (PHYSICAL ) very short dt (30 s)
          Root-finder converged for a high-angular-rate short-dt case; energy rel diff=0.00e+00, h rel diff=0.00e+00 -- self-consistent, |v1|=10.140 km/s is a physically sane LEO speed.
 [PASS] (PHYSICAL ) very long dt (5 hours)
-         Root-finder converged for a long-dt case spanning multiple orbital periods; energy rel diff=3.52e-16, h rel diff=0.00e+00, |v1|=8.573 km/s (physically sane range) -- note the short-way-only solver (no long-way/multi-rev option, documented in lamsolbert.py) will find *a* valid short-way transfer consistent with this dt, not necessarily 'the' orbit a real multi-revolution scenario would imply; that's a documented design limitation, not a bug.
+         Root-finder converged for a long-dt case (5 h, several LEO periods); energy rel diff=5.55e-16, h rel diff=0.00e+00, |v1|=9.396 km/s (physically sane range). Solution is the zero-revolution transfer (dt = 0.93 of its period, a = 15569 km); multi-revolution Lambert is not implemented, by design.
 [PASS] (RUNS     ) dt = 0
          Raised ValueError as expected: 'Time of flight dt must be positive.'. Message says 'Time of flight dt must be positive.' -- clear and specific, not a generic divide-by-zero traceback.
 [PASS] (RUNS     ) near-identical observations (same r1,r2)
