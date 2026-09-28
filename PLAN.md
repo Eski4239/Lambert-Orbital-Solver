@@ -43,7 +43,7 @@ main.py               launches the Dash app
       Visualisation: WebGL 3D Earth, orbit, r/v vectors, periapsis/apoapsis,
       node line, station + line-of-sight, animated satellite on a time
       slider, 2D ground track, ECI/ECEF toggle, dark theme.
-- [ ] **3. NEO scope** — catalog table with filters (class, PHA, H,
+- [x] **3. NEO scope** — catalog table with filters (class, PHA, H,
       MOID, a/e/i ranges) and search; heliocentric 3D view of planets +
       selected NEOs with date slider/animation; object detail card;
       porkchop plot (C3 / total Δv over departure x TOF) with click-to-show

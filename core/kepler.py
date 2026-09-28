@@ -225,3 +225,14 @@ def orbit_curve(r0, v0, mu, n_points=361, max_radius=None):
 
     r = p / (1 + e * np.cos(nu))
     return (r * np.cos(nu))[None, :] * p_hat[:, None] + (r * np.sin(nu))[None, :] * q_hat[:, None]
+
+
+def perifocal_basis(i, raan, argp):
+    """
+    Unit vectors P (towards periapsis) and Q (90 deg ahead in the orbit
+    plane) in the inertial frame; angles in degrees, arrays broadcast.
+    Any elliptic orbit point is r = a (cos E - e) P + a sqrt(1 - e^2) sin E Q.
+    Returns (P, Q), each shape (..., 3).
+    """
+    R = _perifocal_to_inertial(np.radians(i), np.radians(raan), np.radians(argp))
+    return R[..., :, 0], R[..., :, 1]

@@ -2,7 +2,7 @@
 
 from dash import Dash, Input, Output, dcc, html
 
-from app import earth_page
+from app import earth_page, neo_page
 
 FONTS = ("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500"
          "&family=IBM+Plex+Sans:wght@400;500;600&display=swap")
@@ -22,7 +22,7 @@ def create_app():
             html.Div(className="brand", children=[
                 BRAND_MARK,
                 html.Span("ORBIT LAB", className="brand-name"),
-                html.Span("Lambert orbit determination", className="brand-sub"),
+                html.Span("Lambert orbit determination & mission design", className="brand-sub"),
             ]),
             dcc.Tabs(id="scope", value="earth", className="nav-tabs", parent_className="nav-tabs-parent",
                      children=[
@@ -33,8 +33,7 @@ def create_app():
                      ]),
         ]),
         html.Div(id="scope-earth", children=earth_page.layout()),
-        html.Div(id="scope-neo", style={"display": "none"}, children=html.Div(
-            "Near-Earth objects: coming in Phase 3.", className="placeholder")),
+        html.Div(id="scope-neo", style={"display": "none"}, children=neo_page.layout()),
     ])
 
     @app.callback(Output("scope-earth", "style"), Output("scope-neo", "style"),
