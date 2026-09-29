@@ -1,5 +1,10 @@
 # Orbit Lab — Lambert orbit determination & NEO mission design
 
+Orbit Lab determines satellite orbits from ground-station observations and plans missions to near-Earth asteroids, both with one verified Lambert solver.
+It runs as a local web app: live 3D and ground-track views for Earth orbits, and a Sun-centred view with a porkchop planner over JPL's 42,534-asteroid catalog.
+
+![Orbit Lab tour: a Molniya orbit animating in 3D, its ground track, the solar system with the asteroid catalog, the Apophis porkchop plot and the chosen transfer](docs/orbit_lab_demo.gif)
+
 A local web app built around one verified Lambert solver (`lamsolbert`),
 used in two scopes:
 
@@ -100,6 +105,7 @@ helio/           Sun-centred scope
 app/             Dash web UI (earth_page, neo_page, figures, presets, assets/)
 data/            bundled catalog, coastlines, land mask
 tools/           build_land_mask.py (regenerates data/land_mask_1deg.json)
+docs/            orbit_lab_demo.gif (the tour at the top of this README)
 tests/           pytest suites + stress-test runner
 legacy/          original Tkinter GUI (v1)
 ```
