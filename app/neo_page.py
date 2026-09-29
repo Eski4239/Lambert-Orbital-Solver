@@ -302,6 +302,9 @@ def refresh_catalog(_n):
     try:
         _state["df"] = fetch_catalog()
         _state["info"] = snapshot_info(catalog_path())
+        # Cached porkchops were computed from the previous elements.
+        _porkchop.cache_clear()
+        _best.cache_clear()
         return _state["info"]
     except Exception as exc:  # noqa: BLE001 - network errors are shown, not raised
         return f"Refresh failed ({exc.__class__.__name__}); using {_state['info']}"

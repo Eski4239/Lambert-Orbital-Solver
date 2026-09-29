@@ -1,6 +1,6 @@
 ==============================================================================
 STRESS TEST RESULTS
-Generated: 2026-09-28T20:35:57.604024+00:00
+Generated: 2026-09-29T06:45:26.937824+00:00
 ==============================================================================
 
 
@@ -70,11 +70,71 @@ Generated: 2026-09-28T20:35:57.604024+00:00
 [PASS] (RUNS     ) empty datetime field
          No crash; a friendly error dialog was shown: [Invalid input] 'Observation 1 datetime' must be UTC datetime as YYYY-MM-DD HH:MM:SS (got: '')
 
+--- 8. Propagation & frames (v2) ---
+[PASS] (EXACT    ) AER -> ECI -> AER round trip (500 random)
+         eci_to_aer inverts aer_to_eci; worst error 1.9e-12 (deg or relative range).
+[PASS] (PHYSICAL ) near-parabolic (e = 0.97) forward/back through perigee
+         Propagated 36 h forward and back; returns to start within 2.5e-13 relative.
+[PASS] (RUNS     ) solve_kepler with e >= 1
+         Raised ValueError as expected: solve_kepler requires 0 <= e < 1 (elliptic orbits).
+[PASS] (EXACT    ) heliocentric Lambert sweep (300 random, incl. > 180 deg)
+         300 solved (138 with transfer angle > 180 deg); propagating each solution by its time of flight lands on r2 within 9.0e-10 relative.
+[PASS] (PHYSICAL ) 1-second transfer across ~43,000 km
+         Returned a finite (hyperbolic, near-rectilinear) solution, |v1| = 42,579 km/s.
+
+--- 9. Web UI input validation ---
+[PASS] (RUNS     ) Earth: assignment rows solve
+         Solved; status: None Solved · elliptic orbit 1 ms
+[PASS] (RUNS     ) Earth: one observation only
+         Inline error, no crash: 'None Add at least two observations.'
+[PASS] (RUNS     ) Earth: both observations at the same time
+         Inline error, no crash: 'None Obs 1 and 2 have the same time.'
+[PASS] (RUNS     ) Earth: azimuth 400 deg
+         Inline error, no crash: 'None Obs 1 azimuth: azimuth must be in [0, 360).'
+[PASS] (RUNS     ) Earth: range written as 'abc'
+         Inline error, no crash: 'None Obs 1 range: not a number.'
+[PASS] (RUNS     ) Earth: empty time cell
+         Inline error, no crash: 'None Obs 1 time: use YYYY-MM-DD HH:MM:SS (UTC).'
+[PASS] (RUNS     ) Earth: 'inf' elevation
+         Inline error, no crash: 'None Obs 1 elevation: not a finite number.'
+[PASS] (RUNS     ) Earth: station ECEF not a number
+         Inline error, no crash: 'None Ground station position must be three numbers (km).'
+[PASS] (RUNS     ) Earth: station far above the surface
+         Inline error, no crash: "None Station is 57,402 km from the Earth's surface: check the ECEF values."
+[PASS] (RUNS     ) Earth: vector mode, Vallado inputs
+         Solved; status: None Solved · elliptic orbit 0 ms
+[PASS] (RUNS     ) Earth: vector mode, time of flight 0
+         Inline error, no crash: 'None Check the highlighted fields: positions in km, time of flight in seconds (> 0), epoch as YYYY-MM-DD HH:MM:SS.'
+[PASS] (RUNS     ) Earth: vector mode, malformed epoch
+         Inline error, no crash: 'None Check the highlighted fields: positions in km, time of flight in seconds (> 0), epoch as YYYY-MM-DD HH:MM:SS.'
+[PASS] (RUNS     ) Earth: vector mode, r1 == r2
+         Inline error, no crash: 'None Lambert geometry degenerate (A=0 or undefined): transfer angle is 0 or 180 deg (e.g. r1 and r2 are parallel/antiparallel, or identical), no unique solution exists.'
+[PASS] (RUNS     ) Earth: thousands separators '16,945.450'
+         Solved; status: None Solved · elliptic orbit 0 ms
+[PASS] (RUNS     ) NEO: invalid porkchop inputs (bad date, zero window, beyond 2050)
+         Each gives an inline message, no exception: Departure date must be YYYY-MM-DD. | Window must be between 10 and 3,650 days. | The planet ephemeris is only valid from 1800-01-01 to 2050-12-31: choose a window whose latest arrival (2052-10-13) falls inside it.
+[PASS] (RUNS     ) NEO: jump-to-date input
+         Wrong format and out-of-window dates are highlighted; a valid date moves the slider.
+[PASS] (RUNS     ) NEO: unknown object id
+         Shows 'No object selected' instead of failing.
+
+--- 10. Heliocentric (NEO) edge cases ---
+[PASS] (RUNS     ) catalog search with regex characters
+         Searches for '(', '[', '*', '\' are treated as plain text, no regex errors.
+[PASS] (PHYSICAL ) porkchop: high-inclination asteroid (i > 60 deg)
+         2102 Tantalus (1975 YA): grid computed (0% cells without a solution), best total delta-v 29.89 km/s.
+[PASS] (PHYSICAL ) porkchop: Atira (orbit entirely inside Earth's)
+         163693 Atira (2003 CP20): grid computed (0% cells without a solution), best total delta-v 16.87 km/s.
+[PASS] (PHYSICAL ) porkchop: very eccentric asteroid (e > 0.9)
+         267223 (2001 DQ8): grid computed (0% cells without a solution), best total delta-v 25.45 km/s.
+[PASS] (RUNS     ) 'Refresh from JPL' while offline
+         Shows 'Refresh failed (OSError); using JPL SBDB near-Earth asteroids, retrieved 2026-09-28, 42534 objects'; the loaded catalog and data files are unchanged.
+
 ==============================================================================
 SUMMARY
 ==============================================================================
-Total cases: 26
-  PASS: 24
+Total cases: 53
+  PASS: 51
   FAIL: 0
   WARN: 2
 

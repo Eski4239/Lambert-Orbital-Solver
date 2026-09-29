@@ -45,9 +45,11 @@ MU_EARTH = 398600.4418
 RESULTS_PATH = os.path.join(_THIS_DIR, "stress_test_results.txt")
 
 # ----------------------------------------------------------------------
-# Tiny test-collection framework: no external test runner dependency
-# (project constraint is numpy/scipy/matplotlib only), just a list of
+# Tiny test-collection framework (predates the pytest suite in tests/,
+# kept so this report stays readable on its own): a list of
 # (section, name, kind, status, reason) rows built up as we go.
+# Sections 1-7 are the v1 suite; 8-10 cover the v2 propagation code, the
+# web UI's input validation and the heliocentric (NEO) scope.
 # ----------------------------------------------------------------------
 _results = []  # list of dicts: section, name, kind, status, reason
 
@@ -926,6 +928,222 @@ def section_7():
 
 
 # ========================================================================
+# Section 8: v2 propagation & frame edge cases
+# ========================================================================
+def section_8():
+    section = "8. Propagation & frames (v2)"
+    from core.constants import AU, DAY, MU_SUN
+    from core.frames import eci_to_aer
+    from core.kepler import coe_to_rv, propagate_rv, solve_kepler
+
+    def aer_round_trip():
+        rng = np.random.default_rng(8)
+        station = [4853.172, -314.164, 4113.756]
+        worst = 0.0
+        for _ in range(500):
+            az, el, rg, g = rng.uniform(0, 360), rng.uniform(-89.9, 89.9), rng.uniform(200, 4e5), rng.uniform(0, 360)
+            back = eci_to_aer(aer_to_eci(az, el, rg, station, g), station, g)
+            worst = max(worst, abs((back[0] - az + 180) % 360 - 180), abs(back[1] - el), abs(back[2] - rg) / rg)
+        assert worst < 1e-8, f"worst round-trip error {worst:.2e}"
+        record(section, "AER -> ECI -> AER round trip (500 random)", "EXACT", "PASS",
+               f"eci_to_aer inverts aer_to_eci; worst error {worst:.1e} (deg or relative range).")
+    run_case(section, "AER round trip", "EXACT", aer_round_trip)
+
+    def near_parabolic_round_trip():
+        # e = 0.97, a = 300,000 km: perigee 9,000 km, period ~19 days.
+        r0, v0 = coe_to_rv(300000.0, 0.97, 30.0, 40.0, 50.0, 10.0, MU_EARTH)
+        r1, v1 = propagate_rv(r0, v0, 36 * 3600.0, MU_EARTH)
+        rb, _ = propagate_rv(r1, v1, -36 * 3600.0, MU_EARTH)
+        err = np.linalg.norm(rb - r0) / np.linalg.norm(r0)
+        assert err < 1e-7, f"relative error {err:.2e}"
+        record(section, "near-parabolic (e = 0.97) forward/back through perigee", "PHYSICAL", "PASS",
+               f"Propagated 36 h forward and back; returns to start within {err:.1e} relative.")
+    run_case(section, "near-parabolic propagation", "PHYSICAL", near_parabolic_round_trip)
+
+    def kepler_rejects_open_orbits():
+        try:
+            solve_kepler(1.0, 1.2)
+        except ValueError as exc:
+            record(section, "solve_kepler with e >= 1", "RUNS", "PASS",
+                   f"Raised ValueError as expected: {exc}")
+            return
+        raise AssertionError("no error for e >= 1")
+    run_case(section, "solve_kepler e>=1", "RUNS", kepler_rejects_open_orbits)
+
+    def heliocentric_lambert_sweep():
+        rng = np.random.default_rng(80)
+        worst, solved, long_way = 0.0, 0, 0
+        for _ in range(300):
+            r1 = AU * rng.uniform(0.7, 1.3) * np.array([1.0, 0.0, 0.0])
+            th = np.radians(rng.uniform(5, 355))
+            r2 = AU * rng.uniform(0.6, 3.0) * np.array([np.cos(th), np.sin(th), rng.uniform(-0.2, 0.2)])
+            tof = rng.uniform(20, 1000) * DAY
+            try:
+                v1, _ = lamsolbert(r1, r2, tof, mu=MU_SUN)
+            except (ValueError, RuntimeError):
+                continue
+            solved += 1
+            long_way += np.cross(r1, r2)[2] < 0
+            r2p, _ = propagate_rv(r1, v1, tof, MU_SUN)
+            worst = max(worst, np.linalg.norm(r2p - r2) / np.linalg.norm(r2))
+        assert worst < 1e-8, f"worst miss {worst:.2e}"
+        record(section, "heliocentric Lambert sweep (300 random, incl. > 180 deg)", "EXACT", "PASS",
+               f"{solved} solved ({long_way} with transfer angle > 180 deg); propagating each "
+               f"solution by its time of flight lands on r2 within {worst:.1e} relative.")
+    run_case(section, "heliocentric Lambert sweep", "EXACT", heliocentric_lambert_sweep)
+
+    def impossible_short_tof():
+        r1, r2 = np.array([7000.0, 0.0, 0.0]), np.array([0.0, 42000.0, 0.0])
+        try:
+            v1, _ = lamsolbert(r1, r2, 1.0, mu=MU_EARTH)
+        except RuntimeError as exc:
+            record(section, "1-second transfer across ~43,000 km", "RUNS", "PASS",
+                   f"Raised a clear RuntimeError: {exc}")
+            return
+        speed = np.linalg.norm(v1)
+        assert np.isfinite(speed)
+        record(section, "1-second transfer across ~43,000 km", "PHYSICAL", "PASS",
+               f"Returned a finite (hyperbolic, near-rectilinear) solution, |v1| = {speed:,.0f} km/s.")
+    run_case(section, "impossible short tof", "RUNS", impossible_short_tof)
+
+
+# ========================================================================
+# Section 9: Web UI input validation (Dash callbacks called directly)
+# ========================================================================
+def _set_trigger(prop_id):
+    """Give a directly-called Dash callback a callback context to read ctx.triggered_id from."""
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    context_value.set(AttributeDict(triggered_inputs=[{"prop_id": prop_id, "value": None}]))
+
+
+def section_9():
+    section = "9. Web UI input validation"
+    from app import earth_page, neo_page
+
+    rows_ok = [{"time": "2023-04-02 00:30:00", "az": "132.67", "el": "32.44", "range": "16945.450"},
+               {"time": "2023-04-02 03:00:00", "az": "123.08", "el": "50.06", "range": "37350.340"}]
+    station = ("1344.143", "6068.601", "1429.311")
+    vec = ("15945.34", "0", "0", "12214.83899", "10249.46731", "0")
+
+    def earth_solve(mode="obs", rows=rows_ok, st=station, pa=0, pb=1, vec_in=vec, tof="4560",
+                    epoch="", scale=1.0, direction="pro"):
+        out = earth_page.solve(mode, rows, *st, pa, pb, direction, *vec_in, tof, epoch, scale)
+        solution, status, cls = out[0], out[1], out[2]
+        text = " ".join(str(getattr(c, "children", c)) for c in status)
+        return solution, cls, text, out
+
+    cases = [
+        ("assignment rows solve", {}, True, None),
+        ("one observation only", {"rows": rows_ok[:1], "pb": 0}, False, "at least two"),
+        ("both observations at the same time",
+         {"rows": [rows_ok[0], dict(rows_ok[1], time=rows_ok[0]["time"])]}, False, "same time"),
+        ("azimuth 400 deg", {"rows": [dict(rows_ok[0], az="400"), rows_ok[1]]}, False, "azimuth"),
+        ("range written as 'abc'", {"rows": [dict(rows_ok[0], range="abc"), rows_ok[1]]}, False, "range"),
+        ("empty time cell", {"rows": [dict(rows_ok[0], time=""), rows_ok[1]]}, False, "time"),
+        ("'inf' elevation", {"rows": [dict(rows_ok[0], el="inf"), rows_ok[1]]}, False, "elevation"),
+        ("station ECEF not a number", {"st": ("x", "6068.601", "1429.311")}, False, "Ground station"),
+        ("station far above the surface", {"st": ("13441.43", "60686.01", "14293.11")}, False, "surface"),
+        ("vector mode, Vallado inputs", {"mode": "vec"}, True, None),
+        ("vector mode, time of flight 0", {"mode": "vec", "tof": "0"}, False, "highlighted"),
+        ("vector mode, malformed epoch", {"mode": "vec", "epoch": "yesterday"}, False, "highlighted"),
+        ("vector mode, r1 == r2", {"mode": "vec", "vec_in": vec[:3] + vec[:3]}, False, "degenerate"),
+        ("thousands separators '16,945.450'",
+         {"rows": [dict(rows_ok[0], range="16,945.450"), rows_ok[1]]}, True, None),
+    ]
+    for name, kwargs, should_solve, expect in cases:
+        def case(kwargs=kwargs, should_solve=should_solve, expect=expect, name=name):
+            solution, cls, text, _ = earth_solve(**kwargs)
+            if should_solve:
+                assert solution is not None and cls == "status", f"did not solve: {text}"
+                record(section, f"Earth: {name}", "RUNS", "PASS", f"Solved; status: {text}")
+            else:
+                assert solution is None and cls == "status error", f"expected an error, got: {text}"
+                assert expect.lower() in text.lower(), f"message {text!r} lacks {expect!r}"
+                record(section, f"Earth: {name}", "RUNS", "PASS", f"Inline error, no crash: {text!r}")
+        run_case(section, f"Earth: {name}", "RUNS", case)
+
+    def porkchop_inputs():
+        messages = []
+        for start, span, why in (("not-a-date", "730", "Departure date"), ("2026-10-01", "0", "Window"),
+                                 ("2049-06-01", "730", "ephemeris")):
+            _set_trigger("pc-start.value")
+            out = neo_page.render_porkchop("99942", start, span, [40, 500], "dv_total", None, "mission", None)
+            assert why.lower() in out[4].lower(), f"{start}/{span}: message {out[4]!r}"
+            messages.append(out[4])
+        record(section, "NEO: invalid porkchop inputs (bad date, zero window, beyond 2050)", "RUNS",
+               "PASS", "Each gives an inline message, no exception: " + " | ".join(messages))
+    run_case(section, "NEO: porkchop inputs", "RUNS", porkchop_inputs)
+
+    def jump_inputs():
+        t0 = neo_page._today_jd()
+        bad = [neo_page.jump_to_date(t, t0)[1] for t in ("31/12/2027", "2100-01-01")]
+        good = neo_page.jump_to_date(neo_page.jd_to_date(t0 + 100), t0)
+        assert all("invalid" in c for c in bad) and good[0] == 100
+        record(section, "NEO: jump-to-date input", "RUNS", "PASS",
+               "Wrong format and out-of-window dates are highlighted; a valid date moves the slider.")
+    run_case(section, "NEO: jump-to-date", "RUNS", jump_inputs)
+
+    def unknown_object():
+        out = neo_page.show_object("no-such-object", None, neo_page._today_jd())
+        assert out[0] == "No object selected"
+        record(section, "NEO: unknown object id", "RUNS", "PASS", "Shows 'No object selected' instead of failing.")
+    run_case(section, "NEO: unknown object", "RUNS", unknown_object)
+
+
+# ========================================================================
+# Section 10: Heliocentric edge cases
+# ========================================================================
+def section_10():
+    section = "10. Heliocentric (NEO) edge cases"
+    import urllib.request
+    from helio.neo_catalog import LATEST, elements_of, filter_catalog, load_catalog
+    from helio.porkchop import compute_porkchop
+    df = load_catalog()
+
+    def search_special_characters():
+        for text in ("(", "[", "*", "\\", "2004 MN4)"):
+            filter_catalog(df, text)
+        record(section, "catalog search with regex characters", "RUNS", "PASS",
+               "Searches for '(', '[', '*', '\\' are treated as plain text, no regex errors.")
+    run_case(section, "search special characters", "RUNS", search_special_characters)
+
+    for label, query in (("high-inclination asteroid (i > 60 deg)", df["i"] > 60),
+                         ("Atira (orbit entirely inside Earth's)", df["class"] == "IEO"),
+                         ("very eccentric asteroid (e > 0.9)", df["e"] > 0.9)):
+        def case(label=label, query=query):
+            row = df[query].iloc[0]
+            pc = compute_porkchop(elements_of(row), 2461311.5, 365, 30, 400, n_dep=25, n_tof=25)
+            nan = float(np.isnan(pc.dv_total).mean())
+            best = pc.best()
+            assert best is not None and np.isfinite(best[2])
+            record(section, f"porkchop: {label}", "PHYSICAL", "PASS",
+                   f"{row['display']}: grid computed ({nan:.0%} cells without a solution), "
+                   f"best total delta-v {best[2]:.2f} km/s.")
+        run_case(section, f"porkchop: {label}", "PHYSICAL", case)
+
+    def refresh_offline():
+        from app import neo_page
+        before = len(neo_page._state["df"])
+        existed = os.path.exists(LATEST)
+        original = urllib.request.urlopen
+
+        def offline(*_a, **_k):
+            raise OSError("network unreachable (simulated)")
+        urllib.request.urlopen = offline
+        try:
+            msg = neo_page.refresh_catalog(1)
+        finally:
+            urllib.request.urlopen = original
+        assert msg.startswith("Refresh failed"), msg
+        assert len(neo_page._state["df"]) == before
+        assert os.path.exists(LATEST) == existed, "a failed refresh must not create a catalog file"
+        record(section, "'Refresh from JPL' while offline", "RUNS", "PASS",
+               f"Shows {msg!r}; the loaded catalog and data files are unchanged.")
+    run_case(section, "refresh offline", "RUNS", refresh_offline)
+
+
+# ========================================================================
 # Report generation
 # ========================================================================
 def write_report():
@@ -989,6 +1207,9 @@ def main():
     section_5()
     section_6()
     section_7()
+    section_8()
+    section_9()
+    section_10()
     write_report()
 
     fail_count = sum(1 for r in _results if r["status"] == "FAIL")

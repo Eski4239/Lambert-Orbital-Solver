@@ -24,7 +24,7 @@ helio/
 app/                  Dash UI
   earth_page.py       orbit determination (dynamic inputs, 3D, animation)
   neo_page.py         NEO browser, solar system view, porkchop
-data/neo_snapshot.csv bundled catalog
+data/                 bundled catalog (neo_asteroids.csv.gz), coastlines, land mask
 legacy/gui.py         original Tkinter GUI, kept for reference
 tests/                pytest suite + existing stress runner
 main.py               launches the Dash app
@@ -48,5 +48,10 @@ main.py               launches the Dash app
       selected NEOs with date slider/animation; object detail card;
       porkchop plot (C3 / total Δv over departure x TOF) with click-to-show
       transfer trajectory.
-- [ ] **4. Polish** — README, report figures, extend stress tests,
-      performance pass, final review.
+- [x] **Pre-4 polish** — ephemeris-range validation, non-viable pick
+      warning, refined best transfer (SciPy), closest approach, PNG/CSV
+      export, "How it works" notes, jump-to-date, click-to-select in 3D,
+      refreshed catalog kept separate from the bundled snapshot.
+- [x] **4. Polish** — README rewritten for v2, stress tests extended
+      (sections 8–10: v2 propagation, web-UI input validation, NEO edge
+      cases), final review.
